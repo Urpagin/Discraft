@@ -1,20 +1,19 @@
-use std::cell::RefCell;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
-use std::rc::Rc;
+use std::io::{self, BufRead};
 use std::sync::Arc;
 
 use crate::message;
-use log::{error, warn};
-use serenity::all::{Channel, ChannelId, CreateChannel, CreateMessage, Http, UserId};
+use dotenv::dotenv;
+use log::{debug, error, info, warn};
+use serenity::all::{ChannelId, CreateMessage, GuildId, Http, UserId};
 use serenity::async_trait;
 use serenity::model::channel;
 use serenity::prelude::*;
-use tokio::sync::mpsc;
-use tokio::sync::OnceCell;
+use tokio::sync::{broadcast, mpsc};
 
 pub struct DiscordBot {
-    client: Rc<RefCell<Client>>,
+    client: Arc<tokio::sync::Mutex<Client>>,
+    http: Arc<Http>,
 }
 
 impl DiscordBot {
@@ -30,32 +29,61 @@ impl DiscordBot {
             .await
             .expect("Failed to create client");
 
+        // Clone the HTTP to decouple it from the client.
+        // (see comment in the start() function)
+        let http = client.http.clone();
+
         Self {
-            client: Rc::new(RefCell::new(client)),
+            client: Arc::new(Mutex::new(client)),
+            http,
         }
     }
 
     /// Starts up the bot
     pub async fn start(&self) {
-        if let Err(err) = self.client.borrow_mut().start().await {
+        // BEWARE, THE LOCK IS DROPPED AT THE END OF THE BOT'S LIFETIME.
+        // TRYING TO USE .lock() ON THE CLIENT WHILE ITS RUNNING WILL
+        // PEND INFINITELY.
+        if let Err(err) = self.client.lock().await.start().await {
             error!("Failed to start Discord bot: {err}");
         }
+
+        info!("Discord bot started");
     }
 
     /// Infinite loop that listens on the receiver and sends the message to Discord channel
     /// as soon as a message is received.
     pub async fn handle_write_discord(
         &self,
-        mut rx: mpsc::Receiver<message::Message>,
+        rx: mpsc::Receiver<message::Message>,
+        stop_tx: broadcast::Sender<()>,
         channel_ids: &[u64],
     ) {
+        let mut stop_rx = stop_tx.subscribe();
+
+        tokio::select! {
+            _ = self.handle_write_discord_offload(rx, stop_tx, channel_ids) => {
+                return;
+            }
+            _ = stop_rx.recv() => {
+                debug!("Received stop signal");
+                return;
+            }
+        }
+    }
+
+    async fn handle_write_discord_offload(
+        &self,
+        mut rx: mpsc::Receiver<message::Message>,
+        stop_tx: broadcast::Sender<()>,
+        channel_ids: &[u64],
+    ) {
+        info!("Listening for messages to SEND to Discord");
         let channels = channel_ids
             .iter()
             .map(|id| ChannelId::new(*id))
             .collect::<Vec<ChannelId>>();
-
-        // Clone the Arc<Http> so that we can borrow Http with a ref '&'.
-        let http: Arc<Http> = Arc::clone(&self.client.borrow_mut().http);
+        info!("REAL channels: {channels:#?}");
 
         // Channel index counter that will rotate.
         // u128 so that we are sure it will never overflow
@@ -63,8 +91,10 @@ impl DiscordBot {
 
         // Listen infinitely
         loop {
+            debug!("SENT DISCORD MESSAGES: {counter}");
             match rx.recv().await {
                 Some(received_message) => {
+                    debug!("Received a message to SEND to Discord");
                     let rotated_idx: usize = (counter % (channels.len() - 1) as u128) as usize;
                     counter += 1;
 
@@ -72,12 +102,14 @@ impl DiscordBot {
                     let message_content = received_message.to_string_representation();
                     let message = CreateMessage::new().content(message_content);
 
-                    if let Err(err) = channel.send_message(&http, message).await {
+                    if let Err(err) = channel.send_message(&self.http, message).await {
                         warn!("Failed to send message to Discord channel: {err}");
                     }
                 }
                 None => {
                     error!("Received None (channel closed): exiting the function");
+                    stop_tx.send(()).unwrap();
+                    debug!("Channel closed (None received): broadcast stop signal");
                     return;
                 }
             }
@@ -89,22 +121,16 @@ struct Handler {
     message_tx: mpsc::Sender<message::Message>,
 }
 
-/// A lazy-initialized value because in the handler, we need the value of the botID to ignore our
-/// messages, so we'll query it once and reuse it for the rest of the program's lifetime.
-static BOT_ID: OnceCell<UserId> = OnceCell::const_new();
-
-async fn get_bot_id(ctx: Context) -> UserId {
-    // Initialize the value if not already initialized
-    *BOT_ID
-        .get_or_init(|| async { ctx.http.get_current_user().await.unwrap().id })
-        .await
-}
-
 #[async_trait]
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: channel::Message) {
         // Exclude messages sent by us
         if msg.author.id == get_bot_id(ctx).await {
+            return;
+        }
+
+        // Exclude all messages on other guilds
+        if msg.guild_id.unwrap_or(GuildId::default()).to_string() != get_discord_guild_id() {
             return;
         }
 
@@ -139,4 +165,44 @@ pub fn read_channel_ids_file(filepath: &str) -> Vec<u64> {
     }
 
     channel_ids
+}
+
+/// A lazy-initialized value because in the handler, we need the value of the botID to ignore our
+/// messages, so we'll query it once and reuse it for the rest of the program's lifetime.
+static BOT_ID: tokio::sync::OnceCell<UserId> = tokio::sync::OnceCell::const_new();
+
+/// lazy-initialized Discord bot token
+static DISCORD_BOT_TOKEN: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
+
+/// lazy-initialized Discord Guild ID.
+static DISCORD_GUILD_ID: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
+
+/// Fetches the current running bot UserId and stores it into a static variable for later use.
+async fn get_bot_id(ctx: Context) -> UserId {
+    // Initialize the value if not already initialized
+    *BOT_ID
+        .get_or_init(|| async { ctx.http.get_current_user().await.unwrap().id })
+        .await
+}
+
+/// Reads the Discord bot token from a .env file and initializes the static var above.
+pub fn get_discord_bot_token() -> &'static str {
+    DISCORD_BOT_TOKEN
+        .get_or_init(|| {
+            dotenv().ok();
+            std::env::var("DISCORD_BOT_TOKEN")
+                .expect("Failed to read DISCORD_BOT_TOKEN from a .env file")
+        })
+        .as_str()
+}
+
+/// Reads the Discord bot token from a .env file and initializes the static var above.
+pub fn get_discord_guild_id() -> &'static str {
+    DISCORD_GUILD_ID
+        .get_or_init(|| {
+            dotenv().ok();
+            std::env::var("DISCORD_GUILD_ID")
+                .expect("Failed to read DISCORD_BOT_TOKEN from a .env file")
+        })
+        .as_str()
 }

@@ -23,8 +23,8 @@ pub enum MessageDirection {
 }
 
 impl MessageDirection {
-    const CLIENTBOUND_HEADER: &'static str = "**<:elf_tone5: WAIFU :wind_blowing_face: >**";
-    const SERVERBOUND_HEADER: &'static str = "**<:man_mage_tone5: YUMMY :bubble_tea:>**";
+    const CLIENTBOUND_HEADER: &'static str = "**Cthulhu says**: ";
+    const SERVERBOUND_HEADER: &'static str = "**Squidward says**: ";
 }
 
 impl TryFrom<&str> for MessageDirection {
@@ -43,7 +43,7 @@ impl TryFrom<&str> for MessageDirection {
 
 /// Represents a Message in this application.
 /// That can be intantiated from a &[u8] or &str.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Message {
     data: Vec<u8>,
     direction: MessageDirection,
