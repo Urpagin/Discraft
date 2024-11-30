@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use crate::message;
 use log::{debug, error, warn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::Mutex;
 use tokio::sync::{broadcast, mpsc};
 
 /// Received TCP packets from a OwnedReadHalf socket and then sends them through a Sender channel.
@@ -70,7 +73,7 @@ async fn handle_receive_socket_offload(
 /// Receives messages from a Receiver channel and then sends them through a OwnedWriteHalf TCP socket.
 pub async fn handle_channel_to_socket(
     socket: OwnedWriteHalf,
-    rx: mpsc::Receiver<message::Message>,
+    rx: Arc<Mutex<mpsc::Receiver<message::Message>>>,
     stop_tx: broadcast::Sender<()>,
 ) {
     let mut stop_rx = stop_tx.subscribe();
@@ -89,11 +92,11 @@ pub async fn handle_channel_to_socket(
 
 async fn handle_channel_to_socket_offload(
     mut socket: OwnedWriteHalf,
-    mut rx: mpsc::Receiver<message::Message>,
+    rx: Arc<Mutex<mpsc::Receiver<message::Message>>>,
     stop_tx: broadcast::Sender<()>,
 ) {
     loop {
-        match rx.recv().await {
+        match rx.lock().await.recv().await {
             Some(packet) => {
                 if let Err(e) = socket.write_all(packet.to_bytes()).await {
                     error!("Failed to send message to socket: {e}");

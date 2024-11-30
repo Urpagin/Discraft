@@ -3,11 +3,13 @@ use log::error;
 use log::info;
 use shared::discord;
 use shared::message;
+use shared::sockets;
 use std::error::Error;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 
 const ADDRESS: &str = "127.0.0.1";
 const PORT: u16 = 25565;
@@ -42,6 +44,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Start the Discord bot
     let (discord_tx, discord_rx) = mpsc::channel::<message::Message>(64);
+    let discord_rx = Arc::new(Mutex::new(discord_rx)); // Wrap receiver in Arc<Mutex>
 
     let bot = get_bot(discord_tx, stop_tx.clone()).await;
     info!("Discord bot started");
@@ -87,7 +90,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await;
         });
 
-        if let Err(err) = tokio::try_join!(handle_receive_tcp, handle_write_discord) {
+        let stop_tx_clone3 = stop_tx.clone();
+        let discord_rx_clone = Arc::clone(&discord_rx);
+        let handle_write_tcp = tokio::spawn(async move {
+            sockets::handle_channel_to_socket(write_half, discord_rx_clone, stop_tx_clone3).await;
+        });
+
+        if let Err(err) =
+            tokio::try_join!(handle_receive_tcp, handle_write_discord, handle_write_tcp)
+        {
             error!("Error in one of the connection tasks: {:?}", err);
         }
 
