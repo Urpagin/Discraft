@@ -1,10 +1,15 @@
+use crate::message;
 use log::{debug, error, warn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 
 /// Received TCP packets from a OwnedReadHalf socket and then sends them through a Sender channel.
-pub async fn handle_receive_socket(mut socket: OwnedReadHalf, tx: mpsc::Sender<Vec<u8>>) {
+pub async fn handle_receive_socket(
+    mut socket: OwnedReadHalf,
+    tx: mpsc::Sender<message::Message>,
+    messages_direction: message::MessageDirection,
+) {
     let mut buffer = [0u8; 2048];
     loop {
         // Read socket for new packets and buffer it.
@@ -23,8 +28,10 @@ pub async fn handle_receive_socket(mut socket: OwnedReadHalf, tx: mpsc::Sender<V
             }
         };
 
+        // Construct the message
+        let message = message::Message::from_bytes(&buffer[..read], messages_direction);
         // Send the buffer through a channel.
-        if let Err(e) = tx.send(buffer[..read].to_vec()).await {
+        if let Err(e) = tx.send(message).await {
             error!("Failed sending message through channel: {e}");
             break;
         }
@@ -32,11 +39,14 @@ pub async fn handle_receive_socket(mut socket: OwnedReadHalf, tx: mpsc::Sender<V
 }
 
 /// Receives messages from a Receiver channel and then sends them through a OwnedWriteHalf TCP socket.
-pub async fn handle_channel_to_socket(mut socket: OwnedWriteHalf, mut rx: mpsc::Receiver<Vec<u8>>) {
+pub async fn handle_channel_to_socket(
+    mut socket: OwnedWriteHalf,
+    mut rx: mpsc::Receiver<message::Message>,
+) {
     loop {
         match rx.recv().await {
             Some(packet) => {
-                if let Err(e) = socket.write_all(&packet).await {
+                if let Err(e) = socket.write_all(packet.to_bytes()).await {
                     error!("Failed to send message to socket: {e}");
                     break;
                 }

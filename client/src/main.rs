@@ -1,6 +1,10 @@
 use log::info;
+use shared::discord;
+use shared::message;
+use std::env;
 use std::error::Error;
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 
 const ADDRESS: &str = "127.0.0.1";
 const PORT: u16 = 25565;
@@ -27,21 +31,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         // ----------------------------- MC Client -> Discord -----------------------------
 
-        let (tcp_tx, tcp_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+        let (tcp_tx, tcp_rx) = mpsc::channel::<message::Message>(64);
+        let (discord_tx, discord_rx) = mpsc::channel::<message::Message>(64);
 
-        // Handle MC Client packets
+        let token: String =
+            env::var("DISCORD_BOT_TOKEN").expect("Expected a Discord bot token in the environment");
+
+        let bot: discord::DiscordBot = shared::discord::DiscordBot::new(&token, discord_tx).await;
+        let channel_ids = discord::read_channel_ids_file("channel_ids.txt");
+
+        // Receives TCP packets from the MC Client.
         tokio::spawn(async move {
-            shared::sockets::handle_receive_socket(read_half, tcp_tx).await;
+            shared::sockets::handle_receive_socket(
+                read_half,
+                tcp_tx,
+                message::MessageDirection::Serverbound,
+            )
+            .await;
         });
 
         // Send MC Client packets to Discord
         tokio::spawn(async move {
+            bot.handle_write_discord(tcp_rx, channel_ids)
             // TODO: todo (takes tcp_rx)
         });
 
         // ----------------------------- Discord -> MC Client -----------------------------
-
-        let (discord_tx, discord_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
 
         // Handle new Discord messages
         tokio::spawn(async move {

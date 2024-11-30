@@ -1,7 +1,16 @@
 //! File declaring the Message struct, which represents the data we are sending and receiving
 //! in the app.
 
-use std::error::Error;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum MessageError {
+    #[error("Invalid direction: failed to parse direction from string")]
+    InvalidDirection,
+
+    #[error("Hex conversion error: {0}")]
+    HexConversionError(String),
+}
 
 /// An attribute specifying who should account for the packet.
 ///
@@ -19,7 +28,7 @@ impl MessageDirection {
 }
 
 impl TryFrom<&str> for MessageDirection {
-    type Error = Box<dyn Error>;
+    type Error = MessageError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if value.starts_with(MessageDirection::CLIENTBOUND_HEADER) {
@@ -27,7 +36,7 @@ impl TryFrom<&str> for MessageDirection {
         } else if value.starts_with(MessageDirection::SERVERBOUND_HEADER) {
             Ok(MessageDirection::Serverbound)
         } else {
-            Err("Failed to parse direction from string".into())
+            Err(MessageError::InvalidDirection)
         }
     }
 }
@@ -49,9 +58,12 @@ impl Message {
             .join(" ")
     }
 
-    fn hex_to_bytes(string: &str) -> Result<Vec<u8>, hex::FromHexError> {
+    /// Converts a hex string to an array of bytes.
+    /// The input string e.g.: "FF 3C A4 52 01 01 02", pairs of digits separated by spaces
+    fn hex_to_bytes(string: &str) -> Result<Vec<u8>, MessageError> {
         println!("in hex_to_bytes, string={string}");
         hex::decode(string.replace(" ", ""))
+            .map_err(|e| MessageError::HexConversionError(e.to_string()))
     }
 
     // Constructs a Message object from an array of bytes and a direction.
@@ -76,7 +88,7 @@ impl Message {
     }
 
     // Constructs a Message object from a string. Parses the direction from the string.
-    pub fn from_string(message: &str) -> Result<Self, Box<dyn Error>> {
+    pub fn from_string(message: &str) -> Result<Self, MessageError> {
         let direction = MessageDirection::try_from(message)?;
 
         const CLIENT_HEADER_LEN: usize = MessageDirection::CLIENTBOUND_HEADER.len();
@@ -109,7 +121,6 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
-    use tokio::io::AsyncWrite;
 
     use super::*;
 
