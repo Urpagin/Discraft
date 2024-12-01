@@ -1,6 +1,7 @@
 //! File declaring the Message struct, which represents the data we are sending and receiving
 //! in the app.
 
+use log::debug;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,8 +24,8 @@ pub enum MessageDirection {
 }
 
 impl MessageDirection {
-    const CLIENTBOUND_HEADER: &'static str = "**Cthulhu says**: ";
-    const SERVERBOUND_HEADER: &'static str = "**Squidward says**: ";
+    const CLIENTBOUND_HEADER: &'static str = "**Squidward says**: ";
+    const SERVERBOUND_HEADER: &'static str = "**Cthulhu says**: ";
 }
 
 impl TryFrom<&str> for MessageDirection {
@@ -46,7 +47,7 @@ impl TryFrom<&str> for MessageDirection {
 #[derive(Debug, Clone)]
 pub struct Message {
     data: Vec<u8>,
-    direction: MessageDirection,
+    pub direction: MessageDirection,
     text_representation: String,
 }
 
@@ -61,7 +62,7 @@ impl Message {
     /// Converts a hex string to an array of bytes.
     /// The input string e.g.: "FF 3C A4 52 01 01 02", pairs of digits separated by spaces
     fn hex_to_bytes(string: &str) -> Result<Vec<u8>, MessageError> {
-        println!("in hex_to_bytes, string={string}");
+        debug!("In hex_to_bytes(). string={string}");
         hex::decode(string.replace(" ", ""))
             .map_err(|e| MessageError::HexConversionError(e.to_string()))
     }
@@ -99,6 +100,8 @@ impl Message {
             MessageDirection::Clientbound => Message::hex_to_bytes(&message[CLIENT_HEADER_LEN..])?,
             MessageDirection::Serverbound => Message::hex_to_bytes(&message[SERVER_HEADER_LEN..])?,
         };
+
+        debug!("In from_string(). data={data:?}");
 
         Ok(Self {
             data,

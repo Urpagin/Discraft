@@ -1,0 +1,227 @@
+mod discord;
+mod logging;
+mod message;
+mod sockets;
+
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
+use std::error::Error;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::Mutex;
+
+const ADDRESS: &str = "127.0.0.1";
+const PORT: u16 = 25565;
+
+/// Which side we are
+///
+/// Client: MC Client <-> us <-> Discord
+/// Server: Discord <-> us <-> MC Server
+#[derive(PartialEq, Clone, Copy)]
+pub enum Side {
+    Client,
+    Server,
+}
+
+const CURRENT_SIDE: Side = Side::Client;
+
+async fn get_bot(
+    sender: mpsc::Sender<message::Message>,
+    stop_tx: broadcast::Sender<()>,
+) -> Arc<discord::DiscordBot> {
+    let token = discord::get_discord_bot_token(CURRENT_SIDE);
+    let bot = Arc::new(discord::DiscordBot::new(CURRENT_SIDE, token, sender).await);
+
+    let bot_clone = Arc::clone(&bot);
+    tokio::spawn(async move {
+        debug!("Inside the bot.start() async task");
+        bot_clone.start().await;
+
+        error!("Bot exited. Broadcasting stop signal");
+        stop_tx.send(()).unwrap();
+    });
+
+    bot
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    match CURRENT_SIDE {
+        Side::Client => info!("[ CLIENT SIDE RUNNING ]\n"),
+        Side::Server => info!("[ SERVER SIDE RUNNING ]\n"),
+    }
+
+    // Init logging
+    logging::init_logger();
+
+    // Will stop all async tasks when the connection is closed
+    let (stop_tx, _) = broadcast::channel::<()>(16);
+
+    // Start the Discord bot
+    let (discord_tx, discord_rx) = mpsc::channel::<message::Message>(64);
+    let discord_rx = Arc::new(Mutex::new(discord_rx)); // Wrap receiver in Arc<Mutex>
+
+    let bot: Arc<discord::DiscordBot> = get_bot(discord_tx, stop_tx.clone()).await;
+    info!("Discord bot started");
+
+    match CURRENT_SIDE {
+        Side::Client => client(stop_tx, bot, discord_rx).await,
+        Side::Server => server(stop_tx, bot, discord_rx).await,
+    }
+}
+
+/// Client-side logic
+async fn client(
+    stop_tx: broadcast::Sender<()>,
+    bot: Arc<discord::DiscordBot>,
+    discord_rx: Arc<Mutex<Receiver<message::Message>>>,
+) -> Result<(), Box<dyn Error>> {
+    let listener = TcpListener::bind(format!("{ADDRESS}:{PORT}")).await?;
+
+    let mut conn_counter: u64 = 0;
+
+    loop {
+        info!("Listening on {ADDRESS}:{PORT}...");
+
+        let (socket, addr) = listener.accept().await?;
+        info!("Connected to client #{conn_counter}: {addr}");
+        conn_counter += 1;
+
+        // Split to socket in two OWNED parts so that we can use the socket through two functions.
+        let (read_half, write_half) = socket.into_split();
+
+        // MC Client -> Discord channels
+        let (tcp_tx, tcp_rx) = mpsc::channel::<message::Message>(64);
+
+        // Receives TCP packets from the MC Client.
+        let tcp_tx_clone = tcp_tx.clone();
+        let stop_tx_clone = stop_tx.clone();
+        let handle_receive_tcp = tokio::spawn(async move {
+            debug!("Inside the handle_receive_socket async task");
+
+            sockets::handle_receive_socket(
+                read_half,
+                tcp_tx_clone,
+                stop_tx_clone,
+                message::MessageDirection::Serverbound,
+            )
+            .await;
+        });
+
+        // Send MC Client packets to Discord
+        let channel_ids: Vec<u64> = discord::read_channel_ids_file("channel_ids.txt");
+        debug!("Discord channel IDs: {channel_ids:#?}");
+
+        let bot_clone = Arc::clone(&bot);
+        let stop_tx_clone2 = stop_tx.clone();
+        let handle_write_discord = tokio::spawn(async move {
+            debug!("Inside the handle_write_discord async task");
+            bot_clone
+                .handle_write_discord(tcp_rx, stop_tx_clone2, &channel_ids)
+                .await;
+        });
+
+        // Sends received Discord messages to the MC Server through TCP.
+        let stop_tx_clone3 = stop_tx.clone();
+        let discord_rx_clone = Arc::clone(&discord_rx);
+        let handle_write_tcp = tokio::spawn(async move {
+            sockets::handle_channel_to_socket(write_half, discord_rx_clone, stop_tx_clone3).await;
+        });
+
+        if let Err(err) =
+            tokio::try_join!(handle_receive_tcp, handle_write_discord, handle_write_tcp)
+        {
+            error!("Error in one of the connection tasks: {:?}", err);
+        }
+
+        info!("--- CONNECTION CLOSED ---");
+    }
+}
+
+const SERVER_ADDRESS: &str = "mc.hypixel.net";
+const SERVER_PORT: u16 = 25565;
+
+/// Server-side logic
+async fn server(
+    stop_tx: broadcast::Sender<()>,
+    bot: Arc<discord::DiscordBot>,
+    discord_rx_initial: Arc<Mutex<Receiver<message::Message>>>,
+) -> Result<(), Box<dyn Error>> {
+    let mut conn_counter: u64 = 0;
+
+    loop {
+        // Listen for a message that's serverbound (us)
+        let discord_msg: message::Message = {
+            let mut rx_guard = discord_rx_initial.lock().await;
+            match rx_guard.recv().await {
+                Some(msg) => msg,
+                None => {
+                    warn!("Error receiving discord message from closed mpsc channel, got None");
+                    continue;
+                }
+            }
+        };
+
+        // Make a new channel to send the received
+        let (discord_tx, discord_rx) = mpsc::channel::<message::Message>(64);
+
+        // Connect to the server
+        let socket = TcpStream::connect(format!("{SERVER_ADDRESS}:{SERVER_PORT}")).await?;
+        // Split to socket in two OWNED parts so that we can use the socket through two functions.
+        let (read_half, write_half) = socket.into_split();
+        info!("Connected to {SERVER_ADDRESS}:{SERVER_PORT}");
+        conn_counter += 1;
+
+        // Sends received Discord messages to the MC Server through TCP.
+        let stop_tx_clone3 = stop_tx.clone();
+        let discord_rx_clone = Arc::clone(&discord_rx);
+        let handle_write_tcp = tokio::spawn(async move {
+            sockets::handle_channel_to_socket(write_half, discord_rx_clone, stop_tx_clone3).await;
+        });
+
+        // MC Client -> Discord channels
+        let (tcp_tx, tcp_rx) = mpsc::channel::<message::Message>(64);
+
+        // Receives TCP packets from the MC Server.
+        let tcp_tx_clone = tcp_tx.clone();
+        let stop_tx_clone = stop_tx.clone();
+        let handle_receive_tcp = tokio::spawn(async move {
+            debug!("Inside the handle_receive_socket async task");
+
+            sockets::handle_receive_socket(
+                read_half,
+                tcp_tx_clone,
+                stop_tx_clone,
+                message::MessageDirection::Serverbound,
+            )
+            .await;
+        });
+
+        // Send MC Client packets to Discord
+        let channel_ids: Vec<u64> = discord::read_channel_ids_file("channel_ids.txt");
+        debug!("Discord channel IDs: {channel_ids:#?}");
+
+        let bot_clone = Arc::clone(&bot);
+        let stop_tx_clone2 = stop_tx.clone();
+        let handle_write_discord = tokio::spawn(async move {
+            debug!("Inside the handle_write_discord async task");
+            bot_clone
+                .handle_write_discord(tcp_rx, stop_tx_clone2, &channel_ids)
+                .await;
+        });
+
+        if let Err(err) =
+            tokio::try_join!(handle_receive_tcp, handle_write_discord, handle_write_tcp)
+        {
+            error!("Error in one of the connection tasks: {:?}", err);
+        }
+
+        info!("--- CONNECTION CLOSED ---");
+    }
+}

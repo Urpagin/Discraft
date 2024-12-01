@@ -2,10 +2,11 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::sync::Arc;
 
-use crate::message;
+use crate::message::MessageDirection;
+use crate::{message, Side};
 use dotenv::dotenv;
 use log::{debug, error, info, warn};
-use serenity::all::{ChannelId, CreateMessage, GuildId, Http, UserId};
+use serenity::all::{ChannelId, CreateMessage, Http, UserId};
 use serenity::async_trait;
 use serenity::model::channel;
 use serenity::prelude::*;
@@ -17,15 +18,19 @@ pub struct DiscordBot {
 }
 
 impl DiscordBot {
-    pub async fn new(token: &str, message_tx: mpsc::Sender<message::Message>) -> Self {
+    pub async fn new(
+        side: crate::Side,
+        token: &str,
+        message_tx: mpsc::Sender<message::Message>,
+    ) -> Self {
         // Set gateway intents, which decides what events the bot will be notified about
         let intents = GatewayIntents::GUILD_MESSAGES
             | GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::MESSAGE_CONTENT;
 
         // Create a new instance of the Client, logging in as a bot.
-        let client = Client::builder(&token, intents)
-            .event_handler(Handler { message_tx })
+        let client = Client::builder(token, intents)
+            .event_handler(Handler { message_tx, side })
             .await
             .expect("Failed to create client");
 
@@ -62,13 +67,8 @@ impl DiscordBot {
         let mut stop_rx = stop_tx.subscribe();
 
         tokio::select! {
-            _ = self.handle_write_discord_offload(rx, stop_tx, channel_ids) => {
-                return;
-            }
-            _ = stop_rx.recv() => {
-                debug!("Received stop signal");
-                return;
-            }
+            _ = self.handle_write_discord_offload(rx, stop_tx, channel_ids) => {}
+            _ = stop_rx.recv() => { debug!("Received stop signal") }
         }
     }
 
@@ -119,6 +119,7 @@ impl DiscordBot {
 
 struct Handler {
     message_tx: mpsc::Sender<message::Message>,
+    side: crate::Side,
 }
 
 #[async_trait]
@@ -130,7 +131,7 @@ impl EventHandler for Handler {
         }
 
         // Exclude all messages on other guilds
-        if msg.guild_id.unwrap_or(GuildId::default()).to_string() != get_discord_guild_id() {
+        if msg.guild_id.unwrap_or_default().to_string() != get_discord_guild_id() {
             return;
         }
 
@@ -139,8 +140,17 @@ impl EventHandler for Handler {
 
         match message::Message::from_string(&received_message) {
             Ok(message) => {
-                if let Err(err) = self.message_tx.send(message).await {
-                    warn!("Failed to enqueue message from Discord: {err}");
+                let current_side = self.side;
+                let message_side = message.direction;
+
+                // Only account the message if its side corresponds with ours.
+                if (current_side == Side::Client && message_side == MessageDirection::Clientbound)
+                    || (current_side == Side::Server
+                        && message_side == MessageDirection::Serverbound)
+                {
+                    if let Err(err) = self.message_tx.send(message).await {
+                        warn!("Failed to enqueue message from Discord: {err}");
+                    }
                 }
             }
             Err(err) => {
@@ -186,12 +196,17 @@ async fn get_bot_id(ctx: Context) -> UserId {
 }
 
 /// Reads the Discord bot token from a .env file and initializes the static var above.
-pub fn get_discord_bot_token() -> &'static str {
+pub fn get_discord_bot_token(side: crate::Side) -> &'static str {
+    let key = if side == crate::Side::Client {
+        "CLIENT_DISCORD_BOT_TOKEN"
+    } else {
+        "SERVER_DISCORD_BOT_TOKEN"
+    };
+
     DISCORD_BOT_TOKEN
         .get_or_init(|| {
             dotenv().ok();
-            std::env::var("DISCORD_BOT_TOKEN")
-                .expect("Failed to read DISCORD_BOT_TOKEN from a .env file")
+            std::env::var(key).expect("Failed to read DISCORD_BOT_TOKEN from a .env file")
         })
         .as_str()
 }

@@ -17,14 +17,8 @@ pub async fn handle_receive_socket(
     let mut stop_rx = stop_tx.subscribe();
 
     tokio::select! {
-        _ = handle_receive_socket_offload(socket, tx, stop_tx, messages_direction) => {
-            debug!("Socket receiving handling task finished.");
-            return;
-        }
-        _ = stop_rx.recv() => {
-            debug!("Stop signal received. Terminating handler.");
-            return;
-        }
+        _ = handle_receive_socket_offload(socket, tx, stop_tx, messages_direction) => { debug!("Socket receiving handling task finished.") }
+        _ = stop_rx.recv() => { debug!("Stop signal received. Terminating handler.") }
     }
 }
 
@@ -79,14 +73,8 @@ pub async fn handle_channel_to_socket(
     let mut stop_rx = stop_tx.subscribe();
 
     tokio::select! {
-        _ = handle_channel_to_socket_offload(socket, rx, stop_tx) => {
-            debug!("task finished: handle_channel_to_socket");
-            return;
-        }
-        _ = stop_rx.recv() => {
-            debug!("Stop signal received. Terminating handler.");
-            return;
-        }
+        _ = handle_channel_to_socket_offload(socket, rx, stop_tx) => { debug!("task finished: handle_channel_to_socket") }
+        _ = stop_rx.recv() => { debug!("Stop signal received. Terminating handler.") }
     }
 }
 
@@ -95,14 +83,25 @@ async fn handle_channel_to_socket_offload(
     rx: Arc<Mutex<mpsc::Receiver<message::Message>>>,
     stop_tx: broadcast::Sender<()>,
 ) {
+    debug!("Inside handle_channel_to_socket_offload");
+
     loop {
-        match rx.lock().await.recv().await {
+        let packet = {
+            debug!("Getting the mutex guard");
+            let mut rx_guard = rx.lock().await;
+            debug!("Acquired the mutex guard");
+            rx_guard.recv().await
+        };
+
+        match packet {
             Some(packet) => {
                 if let Err(e) = socket.write_all(packet.to_bytes()).await {
                     error!("Failed to send message to socket: {e}");
                     stop_tx.send(()).unwrap();
                     debug!("Failed sending message to socket. Broadcast stop signal");
                     return;
+                } else {
+                    debug!("Sent packet to MC: {packet:?}");
                 }
             }
             None => {

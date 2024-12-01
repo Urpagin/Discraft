@@ -11,9 +11,7 @@ pub fn init_logger() {
         // Set the default logging level for all modules
         .filter(None, LevelFilter::Warn)
         // Suppress Serenity's detailed logs (set to Warn or higher)
-        .filter_module("client", LevelFilter::Debug)
-        .filter_module("server", LevelFilter::Debug)
-        .filter_module("shared", LevelFilter::Debug)
+        .filter_module("discraft", LevelFilter::Debug)
         .write_style(WriteStyle::Always)
         .init();
 }
