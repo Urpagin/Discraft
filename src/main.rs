@@ -9,6 +9,7 @@ use log::info;
 use log::warn;
 use std::error::Error;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -151,14 +152,14 @@ const SERVER_PORT: u16 = 25565;
 async fn server(
     stop_tx: broadcast::Sender<()>,
     bot: Arc<discord::DiscordBot>,
-    discord_rx_initial: Arc<Mutex<Receiver<message::Message>>>,
+    discord_rx: Arc<Mutex<Receiver<message::Message>>>,
 ) -> Result<(), Box<dyn Error>> {
     let mut conn_counter: u64 = 0;
 
     loop {
         // Listen for a message that's serverbound (us)
         let discord_msg: message::Message = {
-            let mut rx_guard = discord_rx_initial.lock().await;
+            let mut rx_guard = discord_rx.lock().await;
             match rx_guard.recv().await {
                 Some(msg) => msg,
                 None => {
@@ -168,14 +169,18 @@ async fn server(
             }
         };
 
-        // Make a new channel to send the received
-        let (discord_tx, discord_rx) = mpsc::channel::<message::Message>(64);
-
         // Connect to the server
-        let socket = TcpStream::connect(format!("{SERVER_ADDRESS}:{SERVER_PORT}")).await?;
+        let mut socket = TcpStream::connect(format!("{SERVER_ADDRESS}:{SERVER_PORT}")).await?;
+
+        // Send the first message
+        if let Err(err) = socket.write_all(discord_msg.to_bytes()).await {
+            error!("Failed to send first packet to MC Server: {err}");
+            continue;
+        }
+
         // Split to socket in two OWNED parts so that we can use the socket through two functions.
         let (read_half, write_half) = socket.into_split();
-        info!("Connected to {SERVER_ADDRESS}:{SERVER_PORT}");
+        info!("Connection #{conn_counter} established with {SERVER_ADDRESS}:{SERVER_PORT}");
         conn_counter += 1;
 
         // Sends received Discord messages to the MC Server through TCP.
