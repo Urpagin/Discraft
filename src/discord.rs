@@ -83,7 +83,6 @@ impl DiscordBot {
             .iter()
             .map(|id| ChannelId::new(*id))
             .collect::<Vec<ChannelId>>();
-        info!("REAL channels: {channels:#?}");
 
         // Channel index counter that will rotate.
         // u128 so that we are sure it will never overflow
@@ -104,6 +103,7 @@ impl DiscordBot {
 
                     if let Err(err) = channel.send_message(&self.http, message).await {
                         warn!("Failed to send message to Discord channel: {err}");
+                        warn!("Message info: len={}", message_content.len());
                     }
                 }
                 None => {

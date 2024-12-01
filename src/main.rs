@@ -30,7 +30,8 @@ pub enum Side {
     Server,
 }
 
-const CURRENT_SIDE: Side = Side::Client;
+//const CURRENT_SIDE: Side = Side::Client;
+const CURRENT_SIDE: Side = Side::Server;
 
 async fn get_bot(
     sender: mpsc::Sender<message::Message>,
@@ -53,13 +54,13 @@ async fn get_bot(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Init logging
+    logging::init_logger();
+
     match CURRENT_SIDE {
         Side::Client => info!("[ CLIENT SIDE RUNNING ]\n"),
         Side::Server => info!("[ SERVER SIDE RUNNING ]\n"),
     }
-
-    // Init logging
-    logging::init_logger();
 
     // Will stop all async tasks when the connection is closed
     let (stop_tx, _) = broadcast::channel::<()>(16);
@@ -145,7 +146,7 @@ async fn client(
     }
 }
 
-const SERVER_ADDRESS: &str = "mc.hypixel.net";
+const SERVER_ADDRESS: &str = "82.66.201.61";
 const SERVER_PORT: u16 = 25565;
 
 /// Server-side logic
@@ -199,11 +200,16 @@ async fn server(
         let handle_receive_tcp = tokio::spawn(async move {
             debug!("Inside the handle_receive_socket async task");
 
+            let messages_direction = match CURRENT_SIDE {
+                Side::Client => message::MessageDirection::Serverbound,
+                Side::Server => message::MessageDirection::Clientbound,
+            };
+
             sockets::handle_receive_socket(
                 read_half,
                 tcp_tx_clone,
                 stop_tx_clone,
-                message::MessageDirection::Serverbound,
+                messages_direction,
             )
             .await;
         });

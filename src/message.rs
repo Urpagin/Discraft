@@ -1,7 +1,10 @@
 //! File declaring the Message struct, which represents the data we are sending and receiving
 //! in the app.
 
+use std::collections::VecDeque;
+
 use log::debug;
+use serenity::futures::AsyncWriteExt;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -42,29 +45,107 @@ impl TryFrom<&str> for MessageDirection {
     }
 }
 
+// Reprensents what is the current part of a Message. 5 out of 10 for example.
+#[derive(Clone, Copy, Debug)]
+pub struct Part {
+    current: usize,
+    total: usize,
+}
+
 /// Represents a Message in this application.
 /// That can be intantiated from a &[u8] or &str.
 #[derive(Debug, Clone)]
 pub struct Message {
     data: Vec<u8>,
     pub direction: MessageDirection,
+    part: Part,
     text_representation: String,
 }
 
 impl Message {
-    fn bytes_to_hex(data: &[u8]) -> String {
-        data.iter()
-            .map(|byte| format!("{byte:02X}"))
-            .collect::<Vec<String>>()
-            .join(" ")
+    // TODO: MA FLEMME EST INCOMMENSURABLE
+    //
+    // TODO: CHANGE MESSAGE AND ENCAPSULATE EACH PART OF THE text_representation
+    // (HEADER, PART NUMBER, DATA) SO THAT WE CAN SORT AND PARTITION CORRECTLY!!!
+
+    /// Partitions a message given a max number of characters. The text is partitioned based on the
+    /// length of its text representation.
+    // TODO: INVALID BECAUSE OF text_representation METADATA!!!!!!!!!! (header, ...)
+    pub fn partition_by_text(&self, max: usize) -> VecDeque<Self> {
+        // Check for invalid `max` values
+        if max == 0 {
+            panic!("`max` cannot be zero");
+        }
+
+        let text_len = self.text_representation.len();
+        let whole_parts = text_len / max;
+        let remainder = text_len % max;
+
+        let total_parts = if remainder > 0 {
+            whole_parts + 1
+        } else {
+            whole_parts
+        };
+
+        let mut queue: VecDeque<Self> = VecDeque::new();
+
+        for i in 0..whole_parts {
+            let start = i * max;
+            let end = (i + 1) * max;
+
+            let part = &self.text_representation[start..end];
+            queue.push_front(Self {
+                data: self.data.clone(),
+                direction: self.direction,
+                part: Part {
+                    current: i + 1,
+                    total: total_parts,
+                },
+                text_representation: part.to_string(),
+            });
+        }
+
+        // Handle any remaining text (final part)
+        if remainder > 0 {
+            let start = whole_parts * max; // Start of the last part
+            let part = &self.text_representation[start..];
+            queue.push_front(Self {
+                data: self.data.clone(),
+                direction: self.direction,
+                part: Part {
+                    current: total_parts,
+                    total: total_parts,
+                },
+                text_representation: part.to_string(),
+            });
+        }
+
+        queue
+    }
+
+    pub fn merge_partitions(partitions: VecDeque<Self>) -> Self {
+        for partition in partitions {
+            todo!();
+        }
+
+        ()
+    }
+
+    fn encode_bytes(data: &[u8]) -> String {
+        base85::encode(data)
+        //data.iter()
+        //    .map(|byte| format!("{byte:02X}"))
+        //    .collect::<Vec<String>>()
+        //    .join(" ")
     }
 
     /// Converts a hex string to an array of bytes.
     /// The input string e.g.: "FF 3C A4 52 01 01 02", pairs of digits separated by spaces
-    fn hex_to_bytes(string: &str) -> Result<Vec<u8>, MessageError> {
-        debug!("In hex_to_bytes(). string={string}");
-        hex::decode(string.replace(" ", ""))
-            .map_err(|e| MessageError::HexConversionError(e.to_string()))
+    fn decode_string(string: &str) -> Result<Vec<u8>, MessageError> {
+        base85::decode(string).map_err(|e| MessageError::HexConversionError(e.to_string()))
+        //debug!("In hex_to_bytes(). string={string}");
+        //hex::decode(string.replace(" ", ""))
+        //    .map_err(|e| MessageError::HexConversionError(e.to_string()))
     }
 
     // Constructs a Message object from an array of bytes and a direction.
@@ -75,7 +156,7 @@ impl Message {
                 MessageDirection::Clientbound => MessageDirection::CLIENTBOUND_HEADER,
                 MessageDirection::Serverbound => MessageDirection::SERVERBOUND_HEADER,
             },
-            Message::bytes_to_hex(data)
+            Message::encode_bytes(data)
         );
 
         // BEWARE, THE HEX::ENCODE ENCODES ALWAYS TO AN EVEN LENGTH STRING.
@@ -97,8 +178,8 @@ impl Message {
 
         // Only take the data after the direction header
         let data: Vec<u8> = match direction {
-            MessageDirection::Clientbound => Message::hex_to_bytes(&message[CLIENT_HEADER_LEN..])?,
-            MessageDirection::Serverbound => Message::hex_to_bytes(&message[SERVER_HEADER_LEN..])?,
+            MessageDirection::Clientbound => Message::decode_string(&message[CLIENT_HEADER_LEN..])?,
+            MessageDirection::Serverbound => Message::decode_string(&message[SERVER_HEADER_LEN..])?,
         };
 
         debug!("In from_string(). data={data:?}");
