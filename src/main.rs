@@ -1,3 +1,4 @@
+mod cli;
 mod discord;
 mod logging;
 mod message;
