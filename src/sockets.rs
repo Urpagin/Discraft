@@ -39,7 +39,7 @@ async fn handle_receive_socket_offload(
                 return;
             }
             Ok(read) => {
-                debug!("Received TCP packet [{read}B]: {:?}", &buffer[..read]);
+                debug!("Received TCP packet [{read}B]");
                 read
             }
             Err(e) => {
@@ -101,7 +101,7 @@ async fn handle_channel_to_socket_offload(
                     debug!("Failed sending message to socket. Broadcast stop signal");
                     return;
                 } else {
-                    debug!("Sent packet to MC: {packet:?}");
+                    debug!("Sent packet to MC");
                 }
             }
             None => {

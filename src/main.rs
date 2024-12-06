@@ -17,6 +17,9 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::Mutex;
 
+//const CURRENT_SIDE: Side = Side::Client;
+const CURRENT_SIDE: Side = Side::Server;
+
 const ADDRESS: &str = "127.0.0.1";
 const PORT: u16 = 25565;
 
@@ -29,9 +32,6 @@ pub enum Side {
     Client,
     Server,
 }
-
-//const CURRENT_SIDE: Side = Side::Client;
-const CURRENT_SIDE: Side = Side::Server;
 
 async fn get_bot(
     sender: mpsc::Sender<message::Message>,
