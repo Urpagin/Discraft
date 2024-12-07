@@ -29,8 +29,8 @@ pub enum MessageDirection {
 }
 
 impl MessageDirection {
-    const CLIENTBOUND_HEADER: &'static str = "**Squidward says**:";
-    const SERVERBOUND_HEADER: &'static str = "**Cthulhu says**:";
+    const CLIENTBOUND_HEADER: &'static str = "**Squidward says**: ";
+    const SERVERBOUND_HEADER: &'static str = "**Cthulhu says**: ";
 
     /// Encodes the direction to String
     pub fn encode_direction(direction: MessageDirection) -> &'static str {
@@ -62,6 +62,8 @@ impl TryFrom<&str> for MessageDirection {
 
 /// A module so that we can enforce the use of the new() constructor and check the input values.
 pub mod part {
+    use std::sync::OnceLock;
+
     use crate::message::MessageError;
 
     /// Reprensents what is the current part of a Message. 5 out of 10 for example.
@@ -74,8 +76,14 @@ pub mod part {
     impl Part {
         /// Maximum allowed part number
         pub const UPPER_BOUND: usize = 0xFF;
-        /// 2 hex digits + sep '/' + 2 hex digits. e.g.: "0C/0F" has 5 characters.
-        pub const PARTITIONING_LENGTH: usize = 5;
+
+        pub fn get_partitioning_length() -> usize {
+            static PARTITIONING_LENGTH: OnceLock<usize> = OnceLock::new();
+            *PARTITIONING_LENGTH.get_or_init(|| {
+                let part = Self::new(1, 1).unwrap();
+                Self::encode_partitioning(part).len()
+            })
+        }
 
         /// Constructor for Part, current and total are checked against the UPPER_BOUND.
         pub fn new(current: usize, total: usize) -> Result<Self, MessageError> {
@@ -110,7 +118,7 @@ pub mod part {
         /// Max is 0xFF which is 255, and Discord supports messages of 2000 characters.
         /// 2000 * 255 = 510,000 which is larger than the max lenght of a TCP packet (65,535)
         pub fn encode_partitioning(part: Self) -> String {
-            format!("{:02X}/{:02X}", part.current(), part.total())
+            format!("{:02X}/{:02X} ", part.current(), part.total())
         }
 
         /// Decodes a partitioning String into a `Part`.
@@ -118,13 +126,13 @@ pub mod part {
         /// however, it can be infinitely long.
         pub fn decode_partitioning(text: &str) -> Result<Self, MessageError> {
             // 2 hex digits + sep + 2 hex digits
-            if text.len() < Self::PARTITIONING_LENGTH {
+            if text.len() < Self::get_partitioning_length() {
                 return Err(MessageError::Partitioning(
                     "partitioning string malformed, string smaller than 5 (4 hex digits + sep)",
                 ));
             }
 
-            let text = &text[..Self::PARTITIONING_LENGTH];
+            let text = &text[..Self::get_partitioning_length()].trim();
 
             let mut tokens = text.split('/');
             let current: usize = tokens
@@ -214,7 +222,28 @@ pub struct Message {
     text: Text,
 }
 
+const HALT_MESSAGE: &'static str = "OI! OI! OI! KYS NOW!";
+const HALT_MESSAGE_BYTES: &[u8] = HALT_MESSAGE.as_bytes();
+
 impl Message {
+    /// A message that should halt everything if read
+    pub fn make_halt_message(direction: MessageDirection) -> Self {
+        let data: Vec<u8> = HALT_MESSAGE_BYTES.to_vec();
+        let part = part::Part::new(1, 1).unwrap();
+        let text = Text::new(direction, part, &data);
+        Self {
+            data,
+            direction,
+            part,
+            text,
+        }
+    }
+
+    /// Determins if a message is a halt message
+    pub fn is_halt_message(message: &Self) -> bool {
+        message.data == HALT_MESSAGE_BYTES
+    }
+
     // Constructs a Message object from an array of bytes and a direction.
     pub fn from_bytes(data: &[u8], direction: MessageDirection) -> Self {
         let part = part::Part::new(1, 1).unwrap();
@@ -235,7 +264,7 @@ impl Message {
         offset += MessageDirection::encode_direction(direction).len();
 
         let part = part::Part::decode_partitioning(&message[offset..])?;
-        offset += part::Part::PARTITIONING_LENGTH;
+        offset += part::Part::get_partitioning_length();
 
         let data = Text::decode_data(&message[offset..])?;
 

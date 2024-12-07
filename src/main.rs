@@ -55,7 +55,7 @@ async fn init_discord_bot(
     stop_tx: broadcast::Sender<()>,
 ) -> Arc<discord::DiscordBot> {
     let current_side = CURRENT_SIDE.get().unwrap().clone();
-    let bot = Arc::new(discord::DiscordBot::new(current_side, sender).await);
+    let bot = Arc::new(discord::DiscordBot::new(current_side, sender, stop_tx.clone()).await);
 
     let bot_clone = Arc::clone(&bot);
     tokio::spawn(async move {
@@ -164,7 +164,7 @@ async fn server(
     let mut conn_counter: u64 = 0;
 
     loop {
-        // Listen for a message that's serverbound (us)
+        // Listen for a message that's serverbound (directed to us)
         let discord_msg: message::Message = {
             let mut rx_guard = discord_rx.lock().await;
             match rx_guard.recv().await {
@@ -206,16 +206,11 @@ async fn server(
         let handle_receive_tcp = tokio::spawn(async move {
             debug!("Inside the handle_receive_socket async task");
 
-            let messages_direction = match CURRENT_SIDE.get().unwrap() {
-                cli::Mode::Server { .. } => message::MessageDirection::Serverbound,
-                cli::Mode::Client { .. } => message::MessageDirection::Clientbound,
-            };
-
             sockets::handle_receive_socket(
                 read_half,
                 tcp_tx_clone,
                 stop_tx_clone,
-                messages_direction,
+                message::MessageDirection::Clientbound,
             )
             .await;
         });

@@ -22,7 +22,11 @@ impl DiscordBot {
     /// partitioning.
     const MAX_MESSAGE_LENGTH_ALLOWED: usize = 1900;
 
-    pub async fn new(side: cli::Mode, message_tx: mpsc::Sender<message::Message>) -> Self {
+    pub async fn new(
+        side: cli::Mode,
+        message_tx: mpsc::Sender<message::Message>,
+        stop_tx: broadcast::Sender<()>,
+    ) -> Self {
         // Launch cache cleanup async task (cleanup every X seconds)
         cache::cleanup_task().await;
 
@@ -38,7 +42,11 @@ impl DiscordBot {
 
         // Create a new instance of the Client, logging in as a bot.
         let client = Client::builder(token, intents)
-            .event_handler(Handler { message_tx, side })
+            .event_handler(Handler {
+                message_tx,
+                stop_tx,
+                side,
+            })
             .await
             .expect("Failed to create client");
 
@@ -101,12 +109,14 @@ impl DiscordBot {
             match rx.recv().await {
                 Some(received_message) => {
                     debug!("Received a message to SEND to Discord");
-                    let rotated_idx: usize = (counter % channels.len() as u128) as usize;
 
                     match make_partitions(received_message) {
                         Ok(partitions) => {
                             for msg in partitions {
+                                let rotated_idx = (counter % channels.len() as u128) as usize;
                                 let channel = channels[rotated_idx];
+                                counter += 1;
+
                                 if let Err(err) =
                                     channel.send_message(&self.http, msg.clone()).await
                                 {
@@ -115,7 +125,6 @@ impl DiscordBot {
                                 } else {
                                     debug!("SENT A MESSAGE TO DISCORD");
                                 }
-                                counter += 1;
                             }
                         }
                         Err(err) => {
@@ -202,6 +211,7 @@ mod cache {
 /// Structure that will implement the handler that will receive all new Discord messages.
 struct Handler {
     message_tx: mpsc::Sender<message::Message>,
+    stop_tx: broadcast::Sender<()>,
     side: cli::Mode,
 }
 
@@ -223,6 +233,12 @@ impl EventHandler for Handler {
 
         match message::Message::from_string(&message_content) {
             Ok(message) => {
+                if message::Message::is_halt_message(&message) {
+                    info!("RECEIVED DISCORD HALT MESSAGE");
+                    self.stop_tx.send(()).unwrap();
+                    debug!("Send stop signal");
+                }
+
                 let current_side: &cli::Mode = &self.side;
                 let message_side: &message::MessageDirection = &message.direction;
 
@@ -240,9 +256,17 @@ impl EventHandler for Handler {
                             if let Err(err) = self.message_tx.send(merged_message).await {
                                 warn!("Failed to enqueue message from Discord: {err}");
                             }
-                            debug!("Enqueued Discord message to TCP channel");
+                            debug!(
+                                "ENQUEUED DISCORD MESSAGE TO TCP CHANNEL. {}/{}",
+                                message.part.current(),
+                                message.part.total()
+                            )
                         } else {
-                            debug!("CACHING DISCORD RECEIVED MESSAGE");
+                            debug!(
+                                "CACHING DISCORD RECEIVED MESSAGE. {}/{}",
+                                message.part.current(),
+                                message.part.total()
+                            );
                         }
                     }
                     Err(err) => {
@@ -279,7 +303,7 @@ async fn cache_or_merge_message(
     message: message::Message,
 ) -> Result<Option<message::Message>, message::MessageError> {
     if message.part.total() == 1 {
-        debug!("No need to partition the message. Returned message.");
+        debug!("Got 1/1. Returned message.");
         return Ok(Some(message));
     }
 
@@ -289,9 +313,8 @@ async fn cache_or_merge_message(
 
     if cache::MESSAGE_CACHE.is_empty() {
         cache::MESSAGE_CACHE.insert(*current_key_guard, messages);
-        debug!("MESSAGE_CACHE was emtpy. Inserted message. Returned message.");
-        // TODO: Why not return Ok(None)?
-        return Ok(Some(message));
+        debug!("MESSAGE_CACHE was empty. Inserted message. Returned Ok(None)");
+        return Ok(None);
     }
 
     let cached_messages = cache::MESSAGE_CACHE
@@ -318,7 +341,11 @@ async fn cache_or_merge_message(
     // We are the next part (e.g., last is 1/5 and we are 2/5)
     if last_cached_message.part.current() == message.part.current() - 1 {
         cache::MESSAGE_CACHE.insert(*current_key_guard, messages);
-        debug!("Got next part. Returning Ok(None)");
+        debug!(
+            "Got next part. Returning Ok(None). {}/{}",
+            last_cached_message.part.current(),
+            message.part.current()
+        );
         return Ok(None);
 
         //*current_key_guard += 1;
@@ -332,6 +359,8 @@ async fn cache_or_merge_message(
 
         let mut series = cached_messages.0.clone();
         series.push(message);
+
+        debug!("Got last part. Returning merged message");
 
         return Ok(Some(message::Message::merge_partitions(&series)?));
     }
@@ -383,4 +412,10 @@ pub fn get_discord_guild_id() -> &'static str {
                 .expect("Failed to read DISCORD_BOT_TOKEN from a .env file")
         })
         .as_str()
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
 }

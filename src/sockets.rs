@@ -7,6 +7,27 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Mutex;
 use tokio::sync::{broadcast, mpsc};
 
+/// Sends a Discord halt message if a stop signal is received.
+async fn stop_signal_listener(
+    stop_tx: broadcast::Sender<()>,
+    tx: mpsc::Sender<message::Message>,
+    message_direction: message::MessageDirection,
+) {
+    let mut stop_rx = stop_tx.subscribe();
+    tokio::spawn(async move {
+        loop {
+            if let Err(err) = stop_rx.recv().await {
+                warn!("Failed to receive from stop signal tx: {err}");
+            } else {
+                let halt_message = message::Message::make_halt_message(message_direction);
+                if let Err(err) = tx.send(halt_message).await {
+                    warn!("Failed to send halt message to tx: {err}");
+                }
+            }
+        }
+    });
+}
+
 /// Received TCP packets from a OwnedReadHalf socket and then sends them through a Sender channel.
 pub async fn handle_receive_socket(
     socket: OwnedReadHalf,
@@ -16,9 +37,16 @@ pub async fn handle_receive_socket(
 ) {
     let mut stop_rx = stop_tx.subscribe();
 
+    // Sends a Discord halt message if stop signal received.
+    stop_signal_listener(stop_tx.clone(), tx.clone(), messages_direction).await;
+
     tokio::select! {
         _ = handle_receive_socket_offload(socket, tx, stop_tx, messages_direction) => { debug!("Socket receiving handling task finished.") }
-        _ = stop_rx.recv() => { debug!("Stop signal received. Terminating handler.") }
+        _ = stop_rx.recv() => {
+            debug!("Stop signal received. Terminating handler.");
+            return;
+            //info!("SENT DISCORD HALT MESSAGE");
+        }
     }
 }
 
@@ -28,7 +56,8 @@ async fn handle_receive_socket_offload(
     stop_tx: broadcast::Sender<()>,
     messages_direction: message::MessageDirection,
 ) {
-    let mut buffer = [0u8; 2048];
+    // TODO: Maybe set a dynamic buffer
+    let mut buffer = [0u8; 16384];
 
     loop {
         let read: usize = match socket.read(&mut buffer).await {
