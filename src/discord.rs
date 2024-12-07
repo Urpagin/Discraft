@@ -3,8 +3,7 @@ use std::io::{self, BufRead};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::message::MessageDirection;
-use crate::{message, Side};
+use crate::{cli, message};
 use dotenv::dotenv;
 use log::{debug, error, info, warn};
 use serenity::all::{ChannelId, CreateMessage, Http, UserId};
@@ -23,11 +22,7 @@ impl DiscordBot {
     /// partitioning.
     const MAX_MESSAGE_LENGTH_ALLOWED: usize = 1900;
 
-    pub async fn new(
-        side: crate::Side,
-        token: &str,
-        message_tx: mpsc::Sender<message::Message>,
-    ) -> Self {
+    pub async fn new(side: cli::Mode, message_tx: mpsc::Sender<message::Message>) -> Self {
         // Launch cache cleanup async task (cleanup every X seconds)
         cache::cleanup_task().await;
 
@@ -35,6 +30,11 @@ impl DiscordBot {
         let intents = GatewayIntents::GUILD_MESSAGES
             | GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::MESSAGE_CONTENT;
+
+        // Get the token from Server or Client.
+        let token: &String = match &side {
+            cli::Mode::Server { token, .. } | cli::Mode::Client { token } => token,
+        };
 
         // Create a new instance of the Client, logging in as a bot.
         let client = Client::builder(token, intents)
@@ -152,16 +152,11 @@ fn make_partitions(message: message::Message) -> Result<Vec<CreateMessage>, mess
     }
 }
 
-struct Handler {
-    message_tx: mpsc::Sender<message::Message>,
-    side: crate::Side,
-}
-
 /// Caching for incomming Discord messages.
 mod cache {
     use dashmap::DashMap;
     use log::{debug, warn};
-    use serenity::{all::CreateMessage, futures::lock::Mutex};
+    use serenity::futures::lock::Mutex;
     use std::time::{Duration, Instant};
 
     use crate::message;
@@ -204,6 +199,12 @@ mod cache {
     }
 }
 
+/// Structure that will implement the handler that will receive all new Discord messages.
+struct Handler {
+    message_tx: mpsc::Sender<message::Message>,
+    side: cli::Mode,
+}
+
 #[async_trait]
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: channel::Message) {
@@ -212,38 +213,69 @@ impl EventHandler for Handler {
             return;
         }
 
-        // Exclude all messages on other guilds
+        // Exclude all messages from other guilds
         if msg.guild_id.unwrap_or_default().to_string() != get_discord_guild_id() {
             return;
         }
 
-        let received_message: String = msg.content;
-        // Will be sent to the mpsc::Sender
+        // Will be parsed and sent to the mpsc::Sender
+        let message_content: String = msg.content;
 
-        match message::Message::from_string(&received_message) {
+        match message::Message::from_string(&message_content) {
             Ok(message) => {
-                let current_side = self.side;
-                let message_side = message.direction;
+                let current_side: &cli::Mode = &self.side;
+                let message_side: &message::MessageDirection = &message.direction;
 
-                // Only account the message if its side corresponds with ours.
-                if (current_side == Side::Client && message_side == MessageDirection::Clientbound)
-                    || (current_side == Side::Server
-                        && message_side == MessageDirection::Serverbound)
-                {
-                    if let Err(err) = self.message_tx.send(message).await {
-                        warn!("Failed to enqueue message from Discord: {err}");
+                // Return if the message direction does not correspond with our side.
+                if !message_direction_matches_side(current_side, message_side) {
+                    return;
+                }
+
+                // From here, the message is for us :
+
+                match cache_or_merge_message(message.clone()).await {
+                    Ok(maybe_message) => {
+                        if let Some(merged_message) = maybe_message {
+                            // Send message to tx
+                            if let Err(err) = self.message_tx.send(merged_message).await {
+                                warn!("Failed to enqueue message from Discord: {err}");
+                            }
+                            debug!("Enqueued Discord message to TCP channel");
+                        } else {
+                            debug!("CACHING DISCORD RECEIVED MESSAGE");
+                        }
+                    }
+                    Err(err) => {
+                        error!("Failed to cache or merge message: {err}");
+                        return;
                     }
                 }
             }
             Err(err) => {
-                warn!("Failed to decode message from string: {err}");
+                warn!("Failed to decode Discord message (from_string()): {err}");
             }
         }
     }
 }
 
+/// Checks if we should account for the received Discord message.
+fn message_direction_matches_side(
+    current_side: &cli::Mode,
+    message_side: &message::MessageDirection,
+) -> bool {
+    let is_server: bool = matches!(current_side, cli::Mode::Server { .. });
+    let is_serverbound: bool = matches!(message_side, message::MessageDirection::Serverbound);
+    is_server == is_serverbound
+}
+
 /// Surely the worst function in this program to have been written
-async fn merge_from_cache(
+///
+/// Caches the message.
+/// Or, merges the cache to make one message.
+///
+/// If the function return Ok(None), this means we should receive more messages to make for the
+/// merged message with all parts.
+async fn cache_or_merge_message(
     message: message::Message,
 ) -> Result<Option<message::Message>, message::MessageError> {
     if message.part.total() == 1 {
@@ -258,6 +290,7 @@ async fn merge_from_cache(
     if cache::MESSAGE_CACHE.is_empty() {
         cache::MESSAGE_CACHE.insert(*current_key_guard, messages);
         debug!("MESSAGE_CACHE was emtpy. Inserted message. Returned message.");
+        // TODO: Why not return Ok(None)?
         return Ok(Some(message));
     }
 
@@ -271,35 +304,42 @@ async fn merge_from_cache(
         .last()
         .ok_or(message::MessageError::Merging("expected message, got None"))?;
 
-    // We have different total parts
+    // We have different total parts (e.g., last is 2/5 and we are 2/10)
     if last_cached_message.part.total() != message.part.total() {
-        cache::MESSAGE_CACHE.insert(*current_key_guard, messages);
         *current_key_guard += 1;
+        cache::MESSAGE_CACHE.insert(*current_key_guard, messages);
         error!(
         "Got different total parts between received and cached. Incrementing key, inserting new message into cache. Returned Ok(Some(message))"
             );
-        return Ok(Some(message));
-    }
 
-    // We have the same total parts
-    if last_cached_message.part.total() == message.part.total() {
-        // We are the last part
-        if last_cached_message.part.current() == message.part.current() - 1 {
-            let mut series = cached_messages.0.clone();
-            series.push(message);
-            *current_key_guard += 1;
-            debug!("Finished merging partitions as I got the last part. Returning merged.");
-            return Ok(Some(message::Message::merge_partitions(&series)?));
-        }
-
-        // We are not the last part. e.g. we are 2/5
-        cache::MESSAGE_CACHE.insert(*current_key_guard, messages);
-        debug!("We are not the last part. Inserting into cache. Returning Ok(None)");
         return Ok(None);
     }
 
-    error!("Reached end of merge_from_cache(). Returned Ok(None)");
-    Ok(None)
+    // We are the next part (e.g., last is 1/5 and we are 2/5)
+    if last_cached_message.part.current() == message.part.current() - 1 {
+        cache::MESSAGE_CACHE.insert(*current_key_guard, messages);
+        debug!("Got next part. Returning Ok(None)");
+        return Ok(None);
+
+        //*current_key_guard += 1;
+        //debug!("Finished merging partitions as I got the last part. Returning merged.");
+        //return Ok(Some(message::Message::merge_partitions(&series)?));
+    }
+
+    // We are the last part (e.g., last is 4/5 and we are 5/5)
+    if last_cached_message.part.total() == message.part.current() {
+        *current_key_guard += 1;
+
+        let mut series = cached_messages.0.clone();
+        series.push(message);
+
+        return Ok(Some(message::Message::merge_partitions(&series)?));
+    }
+
+    error!("Reached end of merge_from_cache(). Returned Err");
+    Err(message::MessageError::Merging(
+        "Unexpected logic flow :shrug:",
+    ))
 }
 
 /// Returns a vec of u64 of each line from a file.
@@ -323,9 +363,6 @@ pub fn read_channel_ids_file(filepath: &str) -> Vec<u64> {
 /// messages, so we'll query it once and reuse it for the rest of the program's lifetime.
 static BOT_ID: tokio::sync::OnceCell<UserId> = tokio::sync::OnceCell::const_new();
 
-/// lazy-initialized Discord bot token
-static DISCORD_BOT_TOKEN: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
-
 /// lazy-initialized Discord Guild ID.
 static DISCORD_GUILD_ID: once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
 
@@ -335,22 +372,6 @@ async fn get_bot_id(ctx: Context) -> UserId {
     *BOT_ID
         .get_or_init(|| async { ctx.http.get_current_user().await.unwrap().id })
         .await
-}
-
-/// Reads the Discord bot token from a .env file and initializes the static var above.
-pub fn get_discord_bot_token(side: crate::Side) -> &'static str {
-    let key = if side == crate::Side::Client {
-        "CLIENT_DISCORD_BOT_TOKEN"
-    } else {
-        "SERVER_DISCORD_BOT_TOKEN"
-    };
-
-    DISCORD_BOT_TOKEN
-        .get_or_init(|| {
-            dotenv().ok();
-            std::env::var(key).expect("Failed to read DISCORD_BOT_TOKEN from a .env file")
-        })
-        .as_str()
 }
 
 /// Reads the Discord bot token from a .env file and initializes the static var above.

@@ -1,22 +1,41 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
-/// Simple program to greet a person
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    /// Name of the person to greet
-    #[arg(short, long)]
-    name: String,
-
-    /// Number of times to greet
-    #[arg(short, long, default_value_t = 1)]
-    count: u8,
+#[derive(Parser)]
+#[command(name = "Discraft")]
+#[command(author = "Urpagin")]
+#[command(version = "0.1")]
+#[command(about = "Play a Minecraft server through Discord", long_about = None)]
+pub struct Args {
+    #[command(subcommand)]
+    pub mode: Mode,
 }
 
-fn main() {
-    let args = Args::parse();
+#[derive(Subcommand, PartialEq, Clone)]
+pub enum Mode {
+    /// Run as the server-side
+    Server {
+        /// The Minecraft server address/IP
+        #[arg(short, long)]
+        address: String,
 
-    for _ in 0..args.count {
-        println!("Hello {}!", args.name);
-    }
+        /// The Minecraft server port
+        #[arg(short, long, default_value_t = 25565)]
+        port: u16,
+
+        /// The Discord bot token
+        #[arg(short, long)]
+        token: String,
+    },
+
+    /// Run as the client-side
+    Client {
+        /// The Discord bot token
+        #[arg(short, long)]
+        token: String,
+    },
+}
+
+/// Returns a usable args struct
+pub fn parse() -> Args {
+    Args::parse()
 }

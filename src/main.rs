@@ -10,6 +10,7 @@ use log::info;
 use log::warn;
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
@@ -18,28 +19,43 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::Mutex;
 
-//const CURRENT_SIDE: Side = Side::Client;
-const CURRENT_SIDE: Side = Side::Server;
-
-const ADDRESS: &str = "127.0.0.1";
-const PORT: u16 = 25565;
-
-/// Which side we are
+/// Which side we are running on
 ///
 /// Client: MC Client <-> us <-> Discord
 /// Server: Discord <-> us <-> MC Server
-#[derive(PartialEq, Clone, Copy)]
-pub enum Side {
-    Client,
-    Server,
+static CURRENT_SIDE: OnceLock<cli::Mode> = OnceLock::new();
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    // Init logging
+    logging::init_logger();
+
+    // Init the current side (client or server)
+    init_side();
+
+    // Channel that is meant to signal to stop listening (TCP and Discord)
+    // when there is a disconnection for example.
+    // It should stop all awaiting async tasks.
+    let (stop_tx, _) = broadcast::channel::<()>(16);
+
+    // Start the Discord bot
+    let (discord_tx, discord_rx) = mpsc::channel::<message::Message>(64);
+    let discord_rx = Arc::new(Mutex::new(discord_rx)); // Wrap receiver in Arc<Mutex>
+
+    let bot: Arc<discord::DiscordBot> = init_discord_bot(discord_tx, stop_tx.clone()).await;
+
+    match CURRENT_SIDE.get().unwrap() {
+        cli::Mode::Server { .. } => server(stop_tx, bot, discord_rx).await,
+        cli::Mode::Client { .. } => client(stop_tx, bot, discord_rx).await,
+    }
 }
 
-async fn get_bot(
+async fn init_discord_bot(
     sender: mpsc::Sender<message::Message>,
     stop_tx: broadcast::Sender<()>,
 ) -> Arc<discord::DiscordBot> {
-    let token = discord::get_discord_bot_token(CURRENT_SIDE);
-    let bot = Arc::new(discord::DiscordBot::new(CURRENT_SIDE, token, sender).await);
+    let current_side = CURRENT_SIDE.get().unwrap().clone();
+    let bot = Arc::new(discord::DiscordBot::new(current_side, sender).await);
 
     let bot_clone = Arc::clone(&bot);
     tokio::spawn(async move {
@@ -50,32 +66,18 @@ async fn get_bot(
         stop_tx.send(()).unwrap();
     });
 
+    info!("Discord bot started");
+
     bot
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    // Init logging
-    logging::init_logger();
+/// Initializes the current side on which the program will run
+fn init_side() {
+    CURRENT_SIDE.get_or_init(|| cli::parse().mode);
 
-    match CURRENT_SIDE {
-        Side::Client => info!("[ CLIENT SIDE RUNNING ]\n"),
-        Side::Server => info!("[ SERVER SIDE RUNNING ]\n"),
-    }
-
-    // Will stop all async tasks when the connection is closed
-    let (stop_tx, _) = broadcast::channel::<()>(16);
-
-    // Start the Discord bot
-    let (discord_tx, discord_rx) = mpsc::channel::<message::Message>(64);
-    let discord_rx = Arc::new(Mutex::new(discord_rx)); // Wrap receiver in Arc<Mutex>
-
-    let bot: Arc<discord::DiscordBot> = get_bot(discord_tx, stop_tx.clone()).await;
-    info!("Discord bot started");
-
-    match CURRENT_SIDE {
-        Side::Client => client(stop_tx, bot, discord_rx).await,
-        Side::Server => server(stop_tx, bot, discord_rx).await,
+    match CURRENT_SIDE.get().unwrap() {
+        cli::Mode::Server { .. } => info!("[ SERVER SIDE RUNNING ]\n"),
+        cli::Mode::Client { .. } => info!("[ CLIENT SIDE RUNNING ]\n"),
     }
 }
 
@@ -85,12 +87,15 @@ async fn client(
     bot: Arc<discord::DiscordBot>,
     discord_rx: Arc<Mutex<Receiver<message::Message>>>,
 ) -> Result<(), Box<dyn Error>> {
-    let listener = TcpListener::bind(format!("{ADDRESS}:{PORT}")).await?;
+    const LISTENING_ADDR: &str = "0.0.0.0";
+    const LISTENING_PORT: u16 = 25565;
+
+    let listener = TcpListener::bind(format!("{LISTENING_ADDR}:{LISTENING_PORT}")).await?;
 
     let mut conn_counter: u64 = 0;
 
     loop {
-        info!("Listening on {ADDRESS}:{PORT}...");
+        info!("Listening on {LISTENING_ADDR}:{LISTENING_PORT}...");
 
         let (socket, addr) = listener.accept().await?;
         info!("Connected to client #{conn_counter}: {addr}");
@@ -201,9 +206,9 @@ async fn server(
         let handle_receive_tcp = tokio::spawn(async move {
             debug!("Inside the handle_receive_socket async task");
 
-            let messages_direction = match CURRENT_SIDE {
-                Side::Client => message::MessageDirection::Serverbound,
-                Side::Server => message::MessageDirection::Clientbound,
+            let messages_direction = match CURRENT_SIDE.get().unwrap() {
+                cli::Mode::Server { .. } => message::MessageDirection::Serverbound,
+                cli::Mode::Client { .. } => message::MessageDirection::Clientbound,
             };
 
             sockets::handle_receive_socket(
