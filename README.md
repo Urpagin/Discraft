@@ -1,18 +1,30 @@
-# Discraft
+# Discraft  
 Playing Minecraft through Discord!
 
-# The Original Idea
+# The Original Idea  
 
-I wondered: would it be possible to play Minecraft through Discord? That would need some async knowledge, wouldn't it? And it's quite funny, right?
+I wondered: would it be possible to play Minecraft through Discord? That would require some knowledge of asynchronous programming, wouldn't it? And it's quite funny, isn't it?  
 
-An original idea I tried to write in C++ but got stuck at the **very end** because I tried to mix Asio, async, class inheritance and multithreading. Surely I had written absolute spaghetti code laced with memory leaks.
+This was an original idea I initially attempted to implement in C++. However, I encountered challenges at the **very end** when trying to mix Asio, asynchronous programming, class inheritance, and multithreading. Surely, I had written absolute spaghetti code riddled with memory leaks.  
 
-# How it works
+# How It Works  
 
-Here is a diagram explaining how everything connects to each other.
+Below is a diagram explaining how all components interact with one another.  
 
-![discraft_diagram](https://github.com/user-attachments/assets/f4b462e6-bd87-46ab-91f7-36969165b05d)
+![discraft_diagram](https://github.com/user-attachments/assets/f4b462e6-bd87-46ab-91f7-36969165b05d)  
 
-*APP is our program.*
+*APP is our program.*  
 
-Note: each side of our app (client and server) commands one Discord bot.
+**Note**: Each side of our app (client and server) controls one Discord bot.  
+
+## The Logic  
+
+- Listen for TCP packets coming from the Minecraft client.  
+  - Convert TCP packets into text suitable for Discord.  
+    - Send the text to Discord.  
+
+- Listen for Discord messages.  
+  - Parse the Discord messages into bytes.  
+    - Send the bytes through the socket to the Minecraft client.  
+
+The only difference between the client side and the server side is that, on the server side, we first listen for a Discord message. Conversely, on the client side, we first wait for the Minecraft server to connect.
