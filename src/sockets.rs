@@ -56,40 +56,44 @@ async fn handle_receive_socket_offload(
     stop_tx: broadcast::Sender<()>,
     messages_direction: message::MessageDirection,
 ) {
-    // TODO: Maybe set a dynamic buffer
-    let mut buffer = [0u8; 16384];
+    // Pre-allocate some buffer space to reduce allocations.
+    let mut buffer = Vec::with_capacity(8192);
 
     loop {
-        let read: usize = match socket.read(&mut buffer).await {
+        // Loop that read all the data on the socket
+        match socket.read_buf(&mut buffer).await {
             Ok(0) => {
                 warn!("Socket closed by the peer.");
-                stop_tx.send(()).unwrap();
+                let _ = stop_tx.send(());
                 debug!("Socket error, broadcast stop signal.");
                 return;
             }
             Ok(read) => {
-                debug!("Received TCP packet [{read}B]");
-                read
+                debug!("Received TCP packet from MINECRAFT [{read}B]");
             }
             Err(e) => {
                 error!("Failed reading the TCP socket: {e}");
-                stop_tx.send(()).unwrap();
+                let _ = stop_tx.send(());
                 debug!("Socket error, broadcast stop signal.");
                 return;
             }
-        };
+        }
 
         // Construct the message
-        let message = message::Message::from_bytes(&buffer[..read], messages_direction);
-        // Send the buffer through a channel.
+        let message = message::Message::from_bytes(&buffer, messages_direction);
+
+        // Send the buffer through the channel
         if let Err(e) = tx.send(message).await {
             error!("Failed sending message through channel: {e}");
-            stop_tx.send(()).unwrap();
+            let _ = stop_tx.send(());
             debug!("mpsc channel error, broadcast stop signal");
             return;
         } else {
             debug!("Sent TCP packet message through the mpsc channel");
         }
+
+        // Clear buffer for the next read cycle
+        buffer.clear();
     }
 }
 
