@@ -292,12 +292,10 @@ fn message_direction_matches_side(
     is_server == is_serverbound
 }
 
-/// Surely the worst function in this program to have been written
-///
-/// Caches the message.
+/// Caches the message
 /// Or, merges the cache to make one message.
 ///
-/// If the function return Ok(None), this means we should receive more messages to make for the
+/// If the function returns Ok(None), we should receive more messages to make for the
 /// merged message with all parts.
 async fn cache_or_merge_message(
     message: message::Message,
