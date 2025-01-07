@@ -3,8 +3,7 @@ use std::io::{self, BufRead};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::{cli, message};
-use dotenv::dotenv;
+use crate::{cli, message, CURRENT_SIDE};
 use log::{debug, error, info, warn};
 use serenity::all::{ChannelId, CreateMessage, Http, UserId};
 use serenity::async_trait;
@@ -37,7 +36,7 @@ impl DiscordBot {
 
         // Get the token from Server or Client.
         let token: &String = match &side {
-            cli::Mode::Server { token, .. } | cli::Mode::Client { token } => token,
+            cli::Mode::Server { token, .. } | cli::Mode::Client { token, .. } => token,
         };
 
         // Create a new instance of the Client, logging in as a bot.
@@ -224,7 +223,7 @@ impl EventHandler for Handler {
         }
 
         // Exclude all messages from other guilds
-        if msg.guild_id.unwrap_or_default().to_string() != get_discord_guild_id() {
+        if msg.guild_id.unwrap_or_default() != get_discord_guild_id() {
             return;
         }
 
@@ -402,14 +401,10 @@ async fn get_bot_id(ctx: Context) -> UserId {
 }
 
 /// Reads the Discord bot token from a .env file and initializes the static var above.
-pub fn get_discord_guild_id() -> &'static str {
-    DISCORD_GUILD_ID
-        .get_or_init(|| {
-            dotenv().ok();
-            std::env::var("DISCORD_GUILD_ID")
-                .expect("Failed to read DISCORD_BOT_TOKEN from a .env file")
-        })
-        .as_str()
+pub fn get_discord_guild_id() -> u64 {
+    match CURRENT_SIDE.get().unwrap() {
+        cli::Mode::Server { guild_id, .. } | cli::Mode::Client { guild_id, .. } => *guild_id,
+    }
 }
 
 #[cfg(test)]

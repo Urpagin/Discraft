@@ -25,6 +25,10 @@ pub enum Mode {
         /// The Discord bot token
         #[arg(short, long)]
         token: String,
+
+        /// The Discord guild ID
+        #[arg(short, long)]
+        guild_id: u64,
     },
 
     /// Run as the client-side
@@ -32,6 +36,10 @@ pub enum Mode {
         /// The Discord bot token
         #[arg(short, long)]
         token: String,
+
+        /// The Discord guild ID
+        #[arg(short, long)]
+        guild_id: u64,
     },
 }
 

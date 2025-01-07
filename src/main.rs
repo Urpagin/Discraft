@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 ///
 /// Client: MC Client <-> us <-> Discord
 /// Server: Discord <-> us <-> MC Server
-static CURRENT_SIDE: OnceLock<cli::Mode> = OnceLock::new();
+pub static CURRENT_SIDE: OnceLock<cli::Mode> = OnceLock::new();
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

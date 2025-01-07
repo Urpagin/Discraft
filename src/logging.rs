@@ -1,4 +1,3 @@
-use env_logger::{self, WriteStyle};
 use log::LevelFilter;
 
 /// Initializes the logging for the whole project;
@@ -12,6 +11,6 @@ pub fn init_logger() {
         .filter(None, LevelFilter::Warn)
         // Suppress Serenity's detailed logs (set to Warn or higher)
         .filter_module("discraft", LevelFilter::Debug)
-        .write_style(WriteStyle::Always)
+        .write_style(env_logger::WriteStyle::Always)
         .init();
 }
