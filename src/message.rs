@@ -1,7 +1,11 @@
 //! File declaring the Message struct, which represents the data we are sending and receiving
 //! in the app.
 
+use std::fmt::Debug;
+
 use thiserror::Error;
+
+use crate::partitioning::{self, Part, TextMessage};
 
 #[derive(Debug, Error)]
 pub enum MessageError {
@@ -60,166 +64,14 @@ impl TryFrom<&str> for MessageDirection {
     }
 }
 
-/// A module so that we can enforce the use of the new() constructor and check the input values.
-pub mod part {
-    use std::sync::OnceLock;
-
-    use crate::message::MessageError;
-
-    /// Reprensents what is the current part of a Message. 5 out of 10 for example.
-    #[derive(Clone, Copy, Debug)]
-    pub struct Part {
-        current: usize,
-        total: usize,
-    }
-
-    impl Part {
-        /// Maximum allowed part number
-        pub const UPPER_BOUND: usize = 0xFF;
-
-        pub fn get_partitioning_length() -> usize {
-            static PARTITIONING_LENGTH: OnceLock<usize> = OnceLock::new();
-            *PARTITIONING_LENGTH.get_or_init(|| {
-                let part = Self::new(1, 1).unwrap();
-                Self::encode_partitioning(part).len()
-            })
-        }
-
-        /// Constructor for Part, current and total are checked against the UPPER_BOUND.
-        pub fn new(current: usize, total: usize) -> Result<Self, MessageError> {
-            if current < 1 {
-                Err(MessageError::Partitioning("current cannot be zero"))
-            } else if current > Self::UPPER_BOUND {
-                Err(MessageError::Partitioning(
-                    "current part is greater than the upper bound",
-                ))
-            } else if total > Self::UPPER_BOUND {
-                Err(MessageError::Partitioning(
-                    "total part is greater than the upper bound",
-                ))
-            } else if current > total {
-                Err(MessageError::Partitioning(
-                    "current part is less then the total part",
-                ))
-            } else {
-                Ok(Self { current, total })
-            }
-        }
-
-        pub fn current(&self) -> usize {
-            self.current
-        }
-
-        pub fn total(&self) -> usize {
-            self.total
-        }
-
-        /// Encodes the partitioning into 2 hex digits.
-        /// Max is 0xFF which is 255, and Discord supports messages of 2000 characters.
-        /// 2000 * 255 = 510,000 which is larger than the max lenght of a TCP packet (65,535)
-        pub fn encode_partitioning(part: Self) -> String {
-            format!("{:02X}/{:02X} ", part.current(), part.total())
-        }
-
-        /// Decodes a partitioning String into a `Part`.
-        /// The first character of the string needs to be the beginning of the partitioning,
-        /// however, it can be infinitely long.
-        pub fn decode_partitioning(text: &str) -> Result<Self, MessageError> {
-            // 2 hex digits + sep + 2 hex digits
-            if text.len() < Self::get_partitioning_length() {
-                return Err(MessageError::Partitioning(
-                    "partitioning string malformed, string smaller than 5 (4 hex digits + sep)",
-                ));
-            }
-
-            let text = &text[..Self::get_partitioning_length()].trim();
-
-            let mut tokens = text.split('/');
-            let current: usize = tokens
-                .next()
-                .ok_or(MessageError::Partitioning(
-                    "missing current total part of partitioning string",
-                ))?
-                .parse()
-                .map_err(|_| MessageError::Partitioning("failed to parse current into number"))?;
-
-            let total: usize = tokens
-                .next()
-                .ok_or(MessageError::Partitioning(
-                    "missing total part of partitioning string",
-                ))?
-                .parse()
-                .map_err(|_| MessageError::Partitioning("failed to parse total into number"))?;
-
-            // Check if there are extra tokens
-            if tokens.next().is_some() {
-                return Err(MessageError::Partitioning(
-                    "partitioning string contains extra data",
-                ));
-            }
-
-            Self::new(current, total)
-        }
-    }
-}
-
-/// Represents the text part of a message
-#[derive(Clone, Debug)]
-pub struct Text {
-    /// The whole text ready to be sent
-    pub all: String,
-
-    /// e.g.: "**Squidward says**: "
-    pub direction: String,
-
-    /// e.g.: "1/2"
-    pub partitioning: String,
-
-    /// The encoded bytes
-    pub data: String,
-}
-
-impl Text {
-    pub fn new(direction: MessageDirection, part: part::Part, data: &[u8]) -> Self {
-        let direction_text: String = MessageDirection::encode_direction(direction).to_string();
-        let partitioning_text: String = part::Part::encode_partitioning(part);
-        let data_text: String = Self::encode_data(data);
-        let all_text: String = format!("{direction_text}{partitioning_text}{data_text}");
-
-        Self {
-            all: all_text,
-            direction: direction_text,
-            partitioning: partitioning_text,
-            data: data_text,
-        }
-    }
-
-    /// Converts bytes to string representation
-    fn encode_data(data: &[u8]) -> String {
-        base85::encode(data)
-        //data.iter()
-        //    .map(|byte| format!("{byte:02X}"))
-        //    .collect::<Vec<String>>()
-        //    .join(" ")
-    }
-
-    /// Converts a string to an array of bytes
-    fn decode_data(string: &str) -> Result<Vec<u8>, MessageError> {
-        base85::decode(string).map_err(|_| MessageError::Decode("failed to decode base85 string"))
-        //debug!("In hex_to_bytes(). string={string}");
-        //hex::decode(string.replace(" ", ""))
-        //    .map_err(|e| MessageError::HexConversionError(e.to_string()))
-    }
-}
-
 /// Represents a Message in this application.
 /// That can be intantiated from a &[u8] or &str.
 #[derive(Debug, Clone)]
 pub struct Message {
     data: Vec<u8>,
     pub direction: MessageDirection,
-    pub part: part::Part,
-    text: Text,
+    pub part: partitioning::Part,
+    pub text: partitioning::TextMessage,
 }
 
 const HALT_MESSAGE: &'static str = "OI! OI! OI! KYS NOW!";
@@ -234,7 +86,6 @@ impl Message {
         Self {
             data,
             direction,
-            part,
             text,
         }
     }
@@ -245,9 +96,10 @@ impl Message {
     }
 
     // Constructs a Message object from an array of bytes and a direction.
-    pub fn from_bytes(data: &[u8], direction: MessageDirection) -> Self {
-        let part = part::Part::new(1, 1).unwrap();
-        let text = Text::new(direction, part, data);
+    pub fn from_bytes<T: AsRef<[u8]>>(data: T, direction: MessageDirection) -> Self {
+        let data: &[u8] = data.as_ref();
+        let part = Part::new(1, 1).unwrap();
+        let text = TextMessage::new(direction, part, data);
         Self {
             data: data.to_vec(),
             direction,
@@ -256,7 +108,8 @@ impl Message {
         }
     }
 
-    // Constructs a Message object from a string. Parses the direction from the string.
+    // Constructs a Message object from a string.
+    // Parses the direction from the string.
     pub fn from_string(message: &str) -> Result<Self, MessageError> {
         let mut offset: usize = 0;
 
@@ -283,116 +136,16 @@ impl Message {
         &self.data
     }
 
-    // I could have made partition methods only for `Text`, but oh well, that's the way it is now,
-    // I don't want to refactor the code again even if it would make the code simpler and more
-    // efficient.
-    //
-    // TODO: Terrible problem: we are partitioning using the length of the DATA STRING, and not the
-    // `full` string!!!
-    pub fn partition_by_text(&self, max: usize) -> Result<Vec<Self>, MessageError> {
-        // Check for invalid `max` values
-        if max == 0 {
-            return Err(MessageError::Partitioning(
-                "partitioning divisor cannot be zero",
-            ));
-        }
-
-        // BY TEXT, and not by bytes.
-        let data_len: usize = self.text.data.len();
-        let whole_parts = data_len / max;
-        let remainder = data_len % max;
-
-        let total_parts = if remainder > 0 {
-            whole_parts + 1
-        } else {
-            whole_parts
-        };
-
-        let mut queue: Vec<Self> = Vec::new();
-        let data_text: &String = &self.text.data;
-
-        for i in 0..whole_parts {
-            let start = i * max;
-            let end = (i + 1) * max;
-
-            let part_data_string: &str = &data_text[start..end];
-            let part_data_bytes: &[u8] = &Text::decode_data(part_data_string)?;
-            let direction = self.direction;
-            let part = part::Part::new(i + 1, total_parts).expect("Failed to create parts");
-            let text = Text::new(direction, part, part_data_bytes);
-
-            queue.push(Self {
-                data: part_data_bytes.to_vec(),
-                direction,
-                part,
-                text,
-            });
-        }
-
-        // Handle any remaining text (final part)
-        if remainder > 0 {
-            let start = whole_parts * max; // Start of the last part
-                                           //
-            let part_data_string: &str = &data_text[start..];
-            let part_data_bytes: &[u8] = &Text::decode_data(part_data_string)?;
-            let direction = self.direction;
-            let part = part::Part::new(total_parts, total_parts).expect("Failed to create parts");
-            let text = Text::new(direction, part, part_data_bytes);
-
-            queue.push(Self {
-                data: part_data_bytes.to_vec(),
-                direction,
-                part,
-                text,
-            });
-        }
-
-        Ok(queue)
-    }
-
-    /// Merges multiple partitions into one `Message`. And concatenates using the
-    /// bytes and not string, opposite to the partition_by_text method which partitions by text.
-    pub fn merge_partitions(partitions: &[Self]) -> Result<Self, MessageError> {
-        let len: usize = partitions.len();
-
-        if len == 0 {
-            return Err(MessageError::Merging("there must be at least one element"));
-        }
-
-        let mut arr = partitions.to_vec();
-
-        // Descending order selection sort by the part.
-        for i in 1..len {
-            let mut j = i;
-            while j > 0 && arr[j].part.current() < arr[j - 1].part.current() {
-                arr.swap(j, j - 1);
-                j -= 1;
-            }
-        }
-
-        // Merged bytes
-        let buffer: Vec<u8> = partitions
-            .iter()
-            .flat_map(|p| p.to_bytes())
-            .cloned()
-            .collect();
-
-        let direction = partitions[0].direction;
-        let part = part::Part::new(1, 1).unwrap();
-        let text = Text::new(direction, part, &buffer);
-
-        Ok(Self {
-            data: buffer,
-            direction,
-            part,
-            text,
-        })
-    }
-
     // Returns the string representation from Message.
     // Ready to be sent to Discord.
     pub fn to_string(&self) -> &str {
-        &self.text.all
+        &self.text.message
+    }
+}
+
+impl From<TextMessage> for Message {
+    fn from(value: TextMessage) -> Self {
+        value.to_message()
     }
 }
 

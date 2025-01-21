@@ -1,4 +1,6 @@
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use std::io::prelude::*;
+
 use std::io::{self, BufRead};
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,9 +19,8 @@ pub struct DiscordBot {
 }
 
 impl DiscordBot {
-    /// Not 2000 because my code is flawed and does not account for any header data when
-    /// partitioning.
-    const MAX_MESSAGE_LENGTH_ALLOWED: usize = 1900;
+    // Exactly 2000 because I'm so confident my code has absolutely no bugs (sigma move)
+    pub const MAX_MESSAGE_LENGTH_ALLOWED: usize = 2000;
 
     pub async fn new(
         side: cli::Mode,
@@ -141,6 +142,25 @@ impl DiscordBot {
                 }
             }
         }
+    }
+}
+
+/// Logs all packet parts into a file.
+fn debug_logging_parts(message: &message::Message) -> () {
+    let part: &str = &message.text.partitioning;
+    let side: &str = match CURRENT_SIDE.get().unwrap() {
+        cli::Mode::Server { .. } => "server",
+        cli::Mode::Client { .. } => "client",
+    };
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .append(true)
+        .open(format!("{side}_packets_logging_part.txt"))
+        .unwrap();
+
+    if let Err(e) = writeln!(file, "{part}") {
+        error!("Failed to write to file: {e}");
     }
 }
 

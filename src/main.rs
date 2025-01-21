@@ -2,6 +2,7 @@ mod cli;
 mod discord;
 mod logging;
 mod message;
+mod partitioning;
 mod sockets;
 
 use log::debug;
