@@ -1,3 +1,13 @@
+//! Everything to partition and aggregate `Message`s.
+//!
+//! In this project's context:
+//!
+//! - paritioning is taking a "big" `Message` and transforming it into multiple smaller `Message`s.
+//!
+//! - aggregation is taking multiple "small" `Message`s and transformaing them into a single, or
+//!   multiple, "big" compound `AggregateMessage`.
+
+use log::{debug, error};
 use once_cell::sync::Lazy;
 
 use crate::{
@@ -63,7 +73,7 @@ impl TextMessage {
     }
 
     /// Converts a string to an array of bytes
-    fn decode_data(string: &str) -> Result<Vec<u8>, MessageError> {
+    pub fn decode_data(string: &str) -> Result<Vec<u8>, MessageError> {
         base85::decode(string).map_err(|_| MessageError::Decode("Failed to decode base85 string"))
         //debug!("In hex_to_bytes(). string={string}");
         //hex::decode(string.replace(" ", ""))
@@ -79,30 +89,17 @@ impl From<Message> for TextMessage {
     }
 }
 
-/// Represents a message that has been partitioned into multiple other parts.
-///
-/// # Usage
-///
-/// Initialize the object with the `partition()` function.
-/// todo
-/// let partitioned = PartitionedMessage::partition(...)
-// TODO: Rewrite the docstring
-pub struct PartitionedMessage {
-    parts: Vec<Message>,
-}
+// Functions to partition and merge `Message`s.
+pub struct Partitioner {}
 
-impl PartitionedMessage {
-    /// Takes in multiple `Message` and returns an object of Self.
-    fn new<T: AsRef<[Message]>>(parts: T) -> Self {
-        Self {
-            parts: parts.as_ref().to_vec(),
-        }
-    }
-
+impl Partitioner {
     /// This function partitions by text, and not bytewise!
+    /// Takes a message and returns smaller messages that all fit within the character limit.
+    ///
+    /// If the input message is already smaller than the max chars, it is returned.
     ///
     /// IMPORTANT: Everything might just blow up if the message encoding is done with UTF-8 characters.
-    pub fn partition(message: Message, str_len_limit: usize) -> Result<Self, MessageError> {
+    pub fn partition(message: Message, str_len_limit: usize) -> Result<Vec<Message>, MessageError> {
         // Check for invalid `max` values
         if str_len_limit == 0 {
             return Err(MessageError::Partitioning(
@@ -164,25 +161,26 @@ impl PartitionedMessage {
             parts.push(part);
         }
 
-        Ok(Self { parts })
+        Ok(parts)
     }
 
-    /// Merges all the `Message`s in the current `PartitionedMessage` object and tries to return a
-    /// `Message`.
-    pub fn merge(&self) -> Result<Message, MessageError> {
+    /// Merges all the `Message`s into a single `Message`.
+    pub fn merge<T: AsRef<[Message]>>(parts: T) -> Result<Message, MessageError> {
+        let parts: &[Message] = parts.as_ref();
+
         // Handle case where there are no parts
-        if self.parts.is_empty() {
+        if parts.is_empty() {
             return Err(MessageError::Partitioning("No parts to merge"));
         }
 
         // Extract direction from the first part
-        let direction = self.parts[0].direction;
+        let direction = parts[0].direction;
 
-        let max_message_length: usize = self.parts.len() * DiscordBot::MAX_MESSAGE_LENGTH_ALLOWED;
+        let max_message_length: usize = parts.len() * DiscordBot::MAX_MESSAGE_LENGTH_ALLOWED;
         let mut payload_buffer: Vec<u8> = Vec::with_capacity(max_message_length);
 
         // Merge all parts
-        for part in &self.parts {
+        for part in parts {
             payload_buffer.extend_from_slice(part.to_bytes());
         }
 
@@ -255,9 +253,8 @@ impl Part {
         }
 
         // Slice to the expected length
-        let text = &text[..expected_len];
+        let text = &text[..expected_len].trim();
         let mut tokens = text.split('/');
-
         // Parse current value
         let current: usize = tokens
             .next()
@@ -298,5 +295,181 @@ impl Part {
 
         // Return the cached value
         *STANDARD_STRING_LENGTH
+    }
+}
+
+/// Functions to aggregate and disaggregate `Messages`.
+///
+/// Simply put: takes lots of small `Message`s and return the biggest messages we can build, while
+/// still being able to de-agregate those agregated messages into their smaller ones.
+///
+///
+/// (length = the length of the message's total string representation(sent to discord))
+///
+/// In this context, aggregation is taking multiple "small" `Message`s and making fewer `Message`s
+/// packed with multiple sub-`Message`.
+///
+/// For example if we have two `Message`s of total length 20 and let's say the header is of length
+/// 10, the aggregated `Message`'s length will be 30
+/// (10(header (fixed size)) + 10(payload of message 1) + 10(payload of message 2))
+///
+/// For simplicity, we manipulate strings.
+pub struct Aggregator {}
+
+impl Aggregator {
+    /// At the end of the numerical length to mark that the lenght is finished. (Lazy-VarInt)
+    const LENGTH_END_FLAG: &'static str = "*";
+
+    /// Aggregates multiple messages into a single one.
+
+    pub fn aggregate<T: AsRef<[Message]>>(messages: T) -> Result<Vec<String>, MessageError> {
+        let messages: &[Message] = messages.as_ref();
+        // Partition messages that may need splitting.
+        let parts: Vec<Message> = messages
+            .iter()
+            .map(|m| Partitioner::partition(m.clone(), DiscordBot::MAX_MESSAGE_LENGTH_ALLOWED))
+            .collect::<Result<Vec<Vec<Message>>, MessageError>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+
+        let mut aggregated: Vec<String> = Vec::new();
+        let mut buffer = String::new();
+
+        // Process each part to form a segment.
+        for part in parts {
+            let part_str = part.to_string();
+            // Build segment: flag + length + '*' + data
+            let segment = format!(
+                "{}{}{}{}",
+                MessageType::Aggregated.as_str(),
+                part_str.len(),
+                Self::LENGTH_END_FLAG,
+                part_str
+            );
+
+            // Check if the segment itself is too large.
+            if segment.len() > DiscordBot::MAX_MESSAGE_LENGTH_ALLOWED {
+                return Err(MessageError::Aggregation(
+                    "Segment too large for a single message",
+                ));
+            }
+
+            // If appending the segment would overflow the current buffer, flush it.
+            if buffer.len() + segment.len() > DiscordBot::MAX_MESSAGE_LENGTH_ALLOWED {
+                aggregated.push(buffer);
+                buffer = String::new();
+            }
+
+            buffer.push_str(&segment);
+        }
+
+        // Append any remaining data.
+        if !buffer.is_empty() {
+            aggregated.push(buffer);
+        }
+
+        Ok(aggregated)
+    }
+
+    /// Disaggregates all aggregate parts from the current `AggregateMessage` object into multiple
+    /// `Message`s.
+    pub fn disaggregate(aggregate_message: &str) -> Result<Vec<Message>, MessageError> {
+        let mut messages: Vec<Message> = Vec::new();
+        let mut offset: usize = 0;
+        let total_len = aggregate_message.len();
+
+        while offset < total_len {
+            // Parse flag (one character)
+            let flag =
+                aggregate_message
+                    .get(offset..offset + 1)
+                    .ok_or(MessageError::Aggregation(
+                        "Failed to parse the message flag.",
+                    ))?;
+            offset += 1;
+
+            if flag != MessageType::Aggregated.as_str() {
+                return Err(MessageError::Aggregation(
+                    "Message flag unknown. Expected aggregation message flag.",
+                ));
+            }
+
+            // Parse the length field until the '*' delimiter is found.
+            let mut var_length = String::new();
+            while offset < total_len {
+                let c =
+                    aggregate_message
+                        .get(offset..offset + 1)
+                        .ok_or(MessageError::Aggregation(
+                            "Unexpected end of string while parsing length.",
+                        ))?;
+                offset += 1;
+                if c == Self::LENGTH_END_FLAG {
+                    if var_length.is_empty() {
+                        return Err(MessageError::Aggregation(
+                            "No digits found for variable length.",
+                        ));
+                    }
+                    break;
+                }
+                var_length.push_str(c);
+            }
+
+            // Convert the length field to a number.
+            let msg_len: usize = var_length.parse().map_err(|_| {
+                MessageError::Aggregation("Failed to parse variable length into a number.")
+            })?;
+
+            // Extract the message data of the specified length.
+            let msg_data = aggregate_message
+                .get(offset..offset + msg_len)
+                .ok_or(MessageError::Aggregation("Failed to parse message data."))?;
+            offset += msg_len;
+
+            // Append parsed message
+            messages.push(Message::from_string(msg_data)?);
+        }
+
+        Ok(messages)
+    }
+}
+
+/// Represents a message type.
+/// Its string representation prepended to every message.
+///
+/// Use MessageType::Normal.as_str()
+/// Use MessageType::Aggregated.as_str()
+#[derive(Debug, Clone)]
+pub enum MessageType {
+    Normal,
+    Aggregated,
+}
+
+impl MessageType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MessageType::Normal => "N",
+            MessageType::Aggregated => "A",
+        }
+    }
+
+    /// Decodes the direction from text
+    pub fn decode_direction(text: &str) -> Result<Self, MessageError> {
+        Self::try_from(text)
+    }
+}
+
+impl TryFrom<&str> for MessageType {
+    type Error = MessageError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.get(1..0).ok_or(MessageError::Decode(
+            "Cannot parse message type, no string.",
+        ))? {
+            "N" => Ok(MessageType::Normal),
+            "A" => Ok(MessageType::Aggregated),
+            _ => Err(MessageError::Decode("Unknown message type.")),
+        }
     }
 }

@@ -5,6 +5,7 @@ use std::io::{self, BufRead};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::partitioning::Partitioner;
 use crate::{cli, message, CURRENT_SIDE};
 use log::{debug, error, info, warn};
 use serenity::all::{ChannelId, CreateMessage, Http, UserId};
@@ -19,8 +20,9 @@ pub struct DiscordBot {
 }
 
 impl DiscordBot {
-    // Exactly 2000 because I'm so confident my code has absolutely no bugs (sigma move)
-    pub const MAX_MESSAGE_LENGTH_ALLOWED: usize = 2000;
+    // Not exactly 2000 characters because my code is as flimsy as a wooden hovel in a tornado.
+    // (for more information, go to the aggregation code)
+    pub const MAX_MESSAGE_LENGTH_ALLOWED: usize = 1900;
 
     pub async fn new(
         side: cli::Mode,
@@ -170,7 +172,7 @@ fn make_partitions(message: message::Message) -> Result<Vec<CreateMessage>, mess
     if message_string.len() <= DiscordBot::MAX_MESSAGE_LENGTH_ALLOWED {
         Ok(vec![CreateMessage::new().content(message_string)])
     } else {
-        let partitions = message.partition_by_text(DiscordBot::MAX_MESSAGE_LENGTH_ALLOWED)?;
+        let partitions = Partitioner::partition(message, DiscordBot::MAX_MESSAGE_LENGTH_ALLOWED)?;
         let result = partitions
             .iter()
             .map(|m| CreateMessage::new().content(m.to_string()))
@@ -379,7 +381,7 @@ async fn cache_or_merge_message(
 
         debug!("Got last part. Returning merged message");
 
-        return Ok(Some(message::Message::merge_partitions(&series)?));
+        return Ok(Some(Partitioner::merge(&series)?));
     }
 
     error!("Reached end of merge_from_cache(). Returned Err");
