@@ -3,6 +3,9 @@
 
 use std::fmt::Debug;
 
+use base64::{engine::general_purpose, Engine};
+use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use thiserror::Error;
 
 use crate::partitioning::{self, Aggregator, Part};
@@ -91,15 +94,15 @@ pub struct Message {
     text: String,
 }
 
-impl Message {
-    pub const LENGTH_DELIMITER: char = '*';
-    pub const HALT_MESSAGE: &'static str =
-        "BY THE GRACE OF GOD, I HEREBY COMMAND YOU TO KILL YOUSELF NOW!";
+const HALT_DATA: &[u8; 8] = &[3, 4, 4, 0, 1, 1, 1, 1];
+pub static HALT_MESSAGE_DECODED: Lazy<String> = Lazy::new(|| base85::encode(&HALT_DATA.to_vec()));
 
+impl Message {
+    pub const LENGTH_DELIMITER: char = '~';
     /// Returs either true of false the input message is a halt message.
     pub fn is_halt_message(message: &Message) -> bool {
         let payload_text: String = Self::payload_bytes_to_string(message.payload());
-        if payload_text == Self::HALT_MESSAGE {
+        if payload_text == *HALT_MESSAGE_DECODED {
             true
         } else {
             false
@@ -109,12 +112,7 @@ impl Message {
     /// Returns a standart halt message.
     pub fn make_halt_message(direction: MessageDirection) -> Self {
         let part = Part::new(1, 1).unwrap();
-        let message = Self::make_string(
-            &direction,
-            &part,
-            &Self::payload_string_to_bytes(Self::HALT_MESSAGE)
-                .expect("Failed to make halt message. (I)"),
-        );
+        let message = Self::make_string(&direction, &part, HALT_DATA);
 
         Self::from_string(message.0 + &message.1)
             .expect("Failed to make halt message. (II)")
@@ -132,11 +130,11 @@ impl Message {
         let (length, text) = Self::make_string(&direction, &part, data);
 
         Self {
-            length,
+            length: length.clone(),
             direction,
             part,
             payload: data.to_vec(),
-            text,
+            text: length + &text,
         }
     }
 
@@ -156,26 +154,33 @@ impl Message {
 
     /// Converts bytes to string representation
     pub fn payload_bytes_to_string(data: &[u8]) -> String {
-        base85::encode(data)
-        //data.iter()
-        //    .map(|byte| format!("{byte:02X}"))
-        //    .collect::<Vec<String>>()
-        //    .join(" ")
+        println!("payload_bytes_to_string() input: {data:?}");
+        //base85::encode(data)
+        //general_purpose::STANDARD.encode(data)
+        // base64::Engine::encode(&self, input)
+        data.iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<Vec<String>>()
+            .join(" ")
     }
 
     /// Converts a string to an array of bytes
     pub fn payload_string_to_bytes(string: &str) -> Result<Vec<u8>, MessageError> {
-        base85::decode(string).map_err(|_| MessageError::Decode("Failed to decode base85 string"))
+        //base85::decode(string).map_err(|_| MessageError::Decode("Failed to decode base85 string"))
+        // general_purpose::STANDARD
+        //     .decode(string)
+        //     .map_err(|_| MessageError::Decode("Failed to decode base85 string"))
+
         //debug!("In hex_to_bytes(). string={string}");
-        //hex::decode(string.replace(" ", ""))
-        //    .map_err(|e| MessageError::HexConversionError(e.to_string()))
+        hex::decode(string.replace(" ", ""))
+            .map_err(|e| MessageError::Decode("failed to decode hex"))
     }
 
     /// Makes the string representation of the message.
     ///
     /// # Returns
     ///
-    /// A tuple (Length, Message(except String))
+    /// a tuple (length, message(except String))
     ///
     /// So to build the complete packet, just flatten the tuple into a String, and send it's ready
     /// to be sent to Discord.
@@ -207,3 +212,130 @@ impl Message {
 }
 
 // TODO: WRITE THOROUGH TESTS!
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::partitioning::{Aggregator, Part};
+
+    #[test]
+    fn test_message_direction_to_string() {
+        // Test that each MessageDirection returns the correct header.
+        assert_eq!(
+            MessageDirection::Clientbound.to_string(),
+            "**Squidward says**: "
+        );
+        assert_eq!(
+            MessageDirection::Serverbound.to_string(),
+            "**Cthulhu says**: "
+        );
+    }
+
+    #[test]
+    fn test_message_direction_from_string() {
+        // Create strings starting with valid headers.
+        let client_str = format!("{}some payload", MessageDirection::Clientbound.to_string());
+        let server_str = format!("{}some payload", MessageDirection::Serverbound.to_string());
+
+        // Check correct parsing.
+        assert_eq!(
+            MessageDirection::from_string(&client_str).unwrap(),
+            MessageDirection::Clientbound
+        );
+        assert_eq!(
+            MessageDirection::from_string(&server_str).unwrap(),
+            MessageDirection::Serverbound
+        );
+
+        // Test with an invalid header.
+        let invalid_str = "Invalid header: payload";
+        assert!(MessageDirection::from_string(invalid_str).is_err());
+    }
+
+    #[test]
+    fn test_try_from_for_message_direction() {
+        // Verify that TryFrom<&str> works as expected.
+        let s = format!("{}data", MessageDirection::Clientbound.to_string());
+        let result = MessageDirection::try_from(s.as_str());
+        assert_eq!(result.unwrap(), MessageDirection::Clientbound);
+    }
+
+    #[test]
+    fn test_payload_conversion() {
+        // Test that encoding and then decoding recovers the original bytes.
+        let original_bytes = vec![104, 101, 108, 108, 111]; // "hello"
+        let encoded = Message::payload_bytes_to_string(&original_bytes);
+        let decoded = Message::payload_string_to_bytes(&encoded).unwrap();
+        assert_eq!(original_bytes, decoded);
+    }
+
+    #[test]
+    fn test_make_string_length() {
+        let direction = MessageDirection::Clientbound;
+        let part = Part::new(1, 1).unwrap();
+        let payload = b"test payload";
+        let (length_str, msg_body) = Message::make_string(&direction, &part, payload);
+
+        // The length string should contain the length and the delimiter.
+        let mut parts = length_str.split(Message::LENGTH_DELIMITER);
+        let len_number_str = parts.next().unwrap();
+        let len_number = len_number_str.parse::<usize>().unwrap();
+
+        // Ensure the reported length matches the message body length.
+        assert_eq!(len_number, msg_body.len());
+
+        // The message body should begin with the header and contain the partition and encoded payload.
+        assert!(msg_body.starts_with(MessageDirection::Clientbound.to_string()));
+        assert!(msg_body.contains(&part.to_string()));
+        let encoded_payload = Message::payload_bytes_to_string(payload);
+        assert!(msg_body.contains(&encoded_payload));
+    }
+
+    #[test]
+    fn test_from_bytes() {
+        let direction = MessageDirection::Serverbound;
+        let payload = b"sample payload";
+        let message = Message::from_bytes(payload, direction);
+
+        // Verify the direction and payload.
+        assert_eq!(message.direction, direction);
+        assert_eq!(message.payload(), payload);
+
+        // Ensure the complete message string contains the proper header and encoded payload.
+        let header = direction.to_string();
+        assert!(message.text.contains(header));
+        let encoded_payload = Message::payload_bytes_to_string(payload);
+        assert!(message.text.contains(&encoded_payload));
+    }
+
+    #[test]
+    fn test_halt_message() {
+        let halt_msg = Message::make_halt_message(MessageDirection::Clientbound);
+
+        // Check that the halt message is recognized.
+        assert!(Message::is_halt_message(&halt_msg));
+
+        // Verify that decoding the payload recovers the halt message string.
+        let payload_decoded = Message::payload_bytes_to_string(halt_msg.payload());
+        assert_eq!(payload_decoded, *HALT_MESSAGE_DECODED);
+    }
+
+    #[test]
+    fn test_from_string_aggregation() {
+        // Construct a valid message string using make_string.
+        let direction = MessageDirection::Clientbound;
+        let part = Part::new(1, 1).unwrap();
+        let payload = b"aggregated message";
+        let (length_str, msg_body) = Message::make_string(&direction, &part, payload);
+        let full_message = format!("{}{}", length_str, msg_body);
+
+        // Use the Aggregator to disaggregate the message.
+        let messages = Message::from_string(full_message).unwrap();
+        assert_eq!(messages.len(), 1);
+
+        // Validate that the parsed message has the expected direction and payload.
+        let message = &messages[0];
+        assert_eq!(message.direction, direction);
+        assert_eq!(message.payload(), payload);
+    }
+}

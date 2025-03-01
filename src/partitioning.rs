@@ -27,6 +27,7 @@ impl Partitioner {
     ///
     /// IMPORTANT!!: Everything might just blow up if the message encoding is done with UTF-8 characters (non-ASCII).
     pub fn partition(message: Message, str_len_limit: usize) -> Result<Vec<Message>, MessageError> {
+        println!("partition() input: {message:?}");
         // Check for invalid `max` values
         if str_len_limit == 0 {
             return Err(MessageError::Partitioning(
@@ -38,8 +39,10 @@ impl Partitioner {
         let direction: &str = message.direction.to_string();
         // Potentially unoptimized doing this every time.
         let payload: String = Message::payload_bytes_to_string(message.payload());
+        println!("payload: {payload:?}");
         // Size of the payload (STRING)
         let payload_len: usize = payload.len();
+        println!("payload_len: {payload_len:?}");
 
         let header_size: usize =
             length.len() + direction.len() + Part::get_standard_string_length();
@@ -48,6 +51,8 @@ impl Partitioner {
                 "length limit is too small to accommodate the header",
             ));
         }
+
+        println!("FLAG I");
 
         // The number of payload characters we can put while still being able to put the header.
         let payload_slice_size: usize = str_len_limit - header_size;
@@ -61,6 +66,8 @@ impl Partitioner {
             whole_parts
         };
 
+        println!("FLAG II");
+
         // The number of payload characters we have partitioned
         let mut put_payload_chars: usize = 0;
         // The current part number. Like 1/2 (current/total).
@@ -71,10 +78,13 @@ impl Partitioner {
         // Where the partition will be stored each loop iteration
         let mut part_buffer: String = String::with_capacity(str_len_limit);
 
+        println!("FLAG III");
+
         // Exits when all the payload has been partitioned
         // Also, we have computted the number of parts, surely there's a way to not use a while
         // loop.
         while put_payload_chars < payload.len() {
+            println!("FLAG IV");
             let part: String = Part::new(current_part, total_parts)?.to_string();
             current_part += 1;
 
@@ -84,6 +94,7 @@ impl Partitioner {
             let stop = usize::min(start + payload_slice_size, payload_len); // Prevent out-of-bounds slicing
             let sliced_payload: &str = &payload[start..stop];
             put_payload_chars = stop; // Update position
+            println!("FLAG V");
 
             // Construct the full partition string
             part_buffer.clear();
@@ -93,10 +104,17 @@ impl Partitioner {
 
             let length: String =
                 part_buffer.len().to_string() + &Message::LENGTH_DELIMITER.to_string();
+            println!("FLAG VI");
+
+            println!(
+                "length.clone() + &part_buffer: {:?}",
+                length.clone() + &part_buffer
+            );
 
             // A whole message is [Lenght, Direction, Part, Payload]
             let part = Message::from_string(length + &part_buffer)?;
             parts.extend_from_slice(&part);
+            println!("FLAG VII");
         }
 
         Ok(parts)
@@ -193,23 +211,20 @@ impl Part {
         // Slice to the expected length
         let text = &text[..expected_len].trim();
         let mut tokens = text.split('/');
+        println!("tokens: {tokens:?}");
         // Parse current value
-        let current: usize = tokens
-            .next()
-            .ok_or_else(|| {
-                MessageError::Partitioning("Missing 'current' part in partitioning string")
-            })?
-            .parse()
-            .map_err(|_| MessageError::Partitioning("Failed to parse 'current' as a number"))?;
+        let current_str = tokens.next().ok_or_else(|| {
+            MessageError::Partitioning("Missing 'current' part in partitioning string")
+        })?;
+        let current: usize = usize::from_str_radix(current_str, 16)
+            .map_err(|_| MessageError::Partitioning("Failed to parse 'current' as a hex number"))?;
 
         // Parse total value
-        let total: usize = tokens
-            .next()
-            .ok_or_else(|| {
-                MessageError::Partitioning("Missing 'total' part in partitioning string")
-            })?
-            .parse()
-            .map_err(|_| MessageError::Partitioning("Failed to parse 'total' as a number"))?;
+        let total_str = tokens.next().ok_or_else(|| {
+            MessageError::Partitioning("Missing 'total' part in partitioning string")
+        })?;
+        let total: usize = usize::from_str_radix(total_str, 16)
+            .map_err(|_| MessageError::Partitioning("Failed to parse 'total' as a hex number"))?;
 
         // Ensure no extra tokens exist
         if tokens.next().is_some() {
@@ -255,9 +270,6 @@ impl Part {
 pub struct Aggregator {}
 
 impl Aggregator {
-    /// At the end of the numerical length to mark that the lenght is finished. (Lazy-VarInt)
-    const LENGTH_END_FLAG: &'static str = "*";
-
     /// Aggregates multiple messages into a single one.
     /// Conceptual example: [["12", "34", 56]] into [["123456"]].
     ///
@@ -298,7 +310,7 @@ impl Aggregator {
         Ok(aggregated)
     }
 
-    /// Disaggregates all aggregate parts from the current `AggregateMessage` object into multiple
+    /// Disaggregates all aggregate parts from the current `&str` into multiple
     /// `Message`s.
     pub fn disaggregate(aggregate_message: &str) -> Result<Vec<Message>, MessageError> {
         let mut messages: Vec<Message> = Vec::new();
@@ -307,7 +319,7 @@ impl Aggregator {
         let mut messages_char_counter: usize = 0;
 
         // Suspicious convoluted loop; bugs may be hidden.
-        while aggregate_message.len() != messages_char_counter {
+        while messages_char_counter < aggregate_message.len() {
             // Parse the length field until the '*' delimiter is found.
             let mut var_length = String::new();
             while offset < total_len {
@@ -318,7 +330,7 @@ impl Aggregator {
                             "Unexpected end of string while parsing length.",
                         ))?;
                 offset += 1;
-                if c == Self::LENGTH_END_FLAG {
+                if c == Message::LENGTH_DELIMITER.to_string() {
                     if var_length.is_empty() {
                         return Err(MessageError::Aggregation(
                             "No digits found for variable length.",
@@ -332,8 +344,10 @@ impl Aggregator {
             // Add length of the length.
             messages_char_counter += var_length.len() + Message::LENGTH_DELIMITER.len_utf8();
             let message_length: usize = var_length
+                .trim()
                 .parse()
                 .map_err(|_| MessageError::Aggregation("Failed to parse the message length."))?;
+
             // And add the length of the header(except the Length) + payload.
             messages_char_counter += message_length;
 
@@ -344,9 +358,14 @@ impl Aggregator {
             let part = Part::from_string(&aggregate_message[offset..])?;
             offset += part.to_string().len();
 
+            // Length_len - (direction_len + part_len) = payload_len
+            // Because Length_len does not contain itself.
+            let payload_len: usize =
+                message_length - (direction.to_string().len() + part.to_string().len());
             let payload: &str = aggregate_message
-                .get(offset..message_length)
+                .get(offset..offset + payload_len)
                 .ok_or(MessageError::Aggregation("Failed to slice the payload."))?;
+            offset += payload.len();
 
             // May be unoptimized, maybe use from_string().
             messages.push(Message::from_bytes(
@@ -356,5 +375,175 @@ impl Aggregator {
         }
 
         Ok(messages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // For testing purposes, we define a dummy DiscordBot if one is not available.
+    // Remove or adjust this module if your crate already defines DiscordBot.
+    mod discord {
+        pub struct DiscordBot;
+        impl DiscordBot {
+            // A small limit to force partitioning/aggregation in tests.
+            pub const MAX_MESSAGE_LENGTH_ALLOWED: usize = 100;
+        }
+    }
+    use crate::message::{Message, MessageDirection, MessageError};
+    use discord::DiscordBot;
+
+    // Helper function to create a Message from a given payload string.
+    fn create_message(payload: &str, direction: MessageDirection) -> Message {
+        Message::from_bytes(payload.as_bytes(), direction)
+    }
+
+    #[test]
+    fn test_partition_message_no_split() {
+        // A short message should not be split.
+        let payload = "Short message";
+        let message = create_message(payload, MessageDirection::Clientbound);
+        // Use a limit that is very generous compared to the message length.
+        let limit = 1000;
+        let parts = Partitioner::partition(message, limit).expect("Partitioning failed");
+        assert_eq!(parts.len(), 1);
+
+        // Verify that the payload (after decoding) equals the original.
+        let encoded_payload = Message::payload_bytes_to_string(parts[0].payload());
+        let decoded_bytes =
+            Message::payload_string_to_bytes(&encoded_payload).expect("Decoding failed");
+        assert_eq!(decoded_bytes, payload.as_bytes());
+    }
+
+    #[test]
+    fn test_partition_message_split() {
+        // A longer payload should be partitioned into multiple parts.
+        let payload = "This is a long message that should be split into multiple parts because it exceeds the allowed limit.";
+        let message = create_message(payload, MessageDirection::Serverbound);
+        // Set a limit small enough to force splitting.
+        let limit = 50;
+        let parts = Partitioner::partition(message, limit).expect("Partitioning failed");
+        assert!(parts.len() > 1);
+
+        // Reassemble the payload from the parts.
+        let mut reconstructed = Vec::new();
+        for part in parts {
+            reconstructed.extend_from_slice(part.payload());
+        }
+        assert_eq!(reconstructed, payload.as_bytes());
+    }
+
+    #[test]
+    fn test_partition_invalid_limit_zero() {
+        let payload = "Test payload";
+        let message = create_message(payload, MessageDirection::Clientbound);
+        let result = Partitioner::partition(message, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_partition_limit_too_small_for_header() {
+        // The limit is set smaller than the minimum required header size.
+        let payload = "Test";
+        let message = create_message(payload, MessageDirection::Clientbound);
+        let result = Partitioner::partition(message, 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_merge_messages() {
+        // Merge two messages and verify the payload concatenation.
+        let payload1 = "Hello, ";
+        let payload2 = "World!";
+        let msg1 = create_message(payload1, MessageDirection::Clientbound);
+        let msg2 = create_message(payload2, MessageDirection::Clientbound);
+        let merged = Partitioner::merge(vec![msg1, msg2]).expect("Merge failed");
+
+        // Decode the merged payload.
+        let merged_encoded = Message::payload_bytes_to_string(merged.payload());
+        let merged_bytes =
+            Message::payload_string_to_bytes(&merged_encoded).expect("Decoding failed");
+        let expected: Vec<u8> = [payload1.as_bytes(), payload2.as_bytes()].concat();
+        assert_eq!(merged_bytes, expected);
+    }
+
+    #[test]
+    fn test_merge_empty_parts() {
+        let result = Partitioner::merge(Vec::<Message>::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aggregate_and_disaggregate() {
+        // Create several messages.
+        let payloads = vec!["Part one.", "Part two.", "Part three."];
+        let messages: Vec<Message> = payloads
+            .iter()
+            .map(|p| create_message(p, MessageDirection::Serverbound))
+            .collect();
+
+        // Aggregate the messages.
+        let aggregated_strings =
+            Aggregator::aggregate(messages.clone()).expect("Aggregation failed");
+        assert!(!aggregated_strings.is_empty());
+
+        // Disaggregate each aggregated string.
+        let mut disaggregated_messages = Vec::new();
+        for agg in aggregated_strings {
+            let parts = Aggregator::disaggregate(&agg).expect("Disaggregation failed");
+            disaggregated_messages.extend(parts);
+        }
+
+        // Reconstruct the payload from the disaggregated messages.
+        let mut reconstructed = Vec::new();
+        for msg in disaggregated_messages {
+            reconstructed.extend_from_slice(msg.payload());
+        }
+        let mut expected = Vec::new();
+        for msg in messages {
+            expected.extend_from_slice(msg.payload());
+        }
+        assert_eq!(reconstructed, expected);
+    }
+
+    #[test]
+    fn test_disaggregate_invalid_string() {
+        // An aggregate string that does not follow the proper format should error.
+        let invalid_aggregate = "invalid message without proper length delimiter";
+        let result = Aggregator::disaggregate(invalid_aggregate);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_part_from_string_and_to_string() {
+        // Verify that converting a Part to a string and back works correctly.
+        let part = Part::new(1, 10).expect("Part creation failed");
+        let part_str = part.to_string();
+        let parsed_part = Part::from_string(&part_str).expect("Parsing Part from string failed");
+        assert_eq!(part.current(), parsed_part.current());
+        assert_eq!(part.total(), parsed_part.total());
+    }
+
+    #[test]
+    fn test_part_from_string_invalid() {
+        // Test several invalid partition strings.
+        let invalid_strs = vec![
+            "1/10",        // Not zero-padded and missing trailing space.
+            "01/10/extra", // Extra token.
+            "0110",        // Missing delimiter.
+            "01/",         // Missing total.
+            "/10",         // Missing current.
+        ];
+        for s in invalid_strs {
+            assert!(Part::from_string(s).is_err());
+        }
+    }
+
+    #[test]
+    fn test_get_standard_string_length() {
+        // The standard encoded Part (e.g., "01/01 ") should have a fixed length.
+        let len = Part::get_standard_string_length();
+        // Using the format "{:02X}/{:02X} " the expected length is 6.
+        assert_eq!(len, 6);
     }
 }
