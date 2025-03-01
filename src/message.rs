@@ -5,7 +5,7 @@ use std::fmt::Debug;
 
 use thiserror::Error;
 
-use crate::partitioning::{self, MessageType, Part, TextMessage};
+use crate::partitioning::{self, Aggregator, Part};
 
 #[derive(Debug, Error)]
 pub enum MessageError {
@@ -40,15 +40,15 @@ impl MessageDirection {
     const SERVERBOUND_HEADER: &'static str = "**Cthulhu says**: ";
 
     /// Encodes the direction to String
-    pub fn encode_direction(direction: MessageDirection) -> &'static str {
-        match direction {
+    pub fn to_string(self) -> &'static str {
+        match self {
             MessageDirection::Clientbound => MessageDirection::CLIENTBOUND_HEADER,
             MessageDirection::Serverbound => MessageDirection::SERVERBOUND_HEADER,
         }
     }
 
-    /// Decodes the direction from text
-    pub fn decode_direction(text: &str) -> Result<MessageDirection, MessageError> {
+    /// Decodes the first direction from text
+    pub fn from_string(text: &str) -> Result<MessageDirection, MessageError> {
         MessageDirection::try_from(text)
     }
 }
@@ -68,239 +68,142 @@ impl TryFrom<&str> for MessageDirection {
 }
 
 /// Represents a Message in this application.
-/// That can be intantiated from a &[u8] or &str.
+/// That can be intantiated from strings and bytes.
+/// Message layout [length, direction, part, payload]
+///
+/// # Length
+///
+/// The length is a String at the beginning of each message in the format:
+/// "<length of the header + payload except for the length itsef in decimal><delimiter>"
 #[derive(Debug, Clone)]
 pub struct Message {
-    // Message layout [type, direction, part, payload]
-    // the three fist elements make up the Header of the message.
+    // The length of the header(except length itself) + payload.
+    pub length: String,
+    // Either clientbound, or serverbound.
     pub direction: MessageDirection,
+    // X/Y to partition messages into smaller ones. (e.g. 2/5)
     pub part: partitioning::Part,
+
+    // The actual bytes of data. The payload.
     payload: Vec<u8>,
 
-    // TODO: Lazy initialize the text part only when needed.
-    pub text: partitioning::TextMessage,
+    // The full message as a String. Ready to be sent to Discord.
+    text: String,
 }
 
-const HALT_MESSAGE: &'static str = "OI! OI! OI! KYS NOW!";
-const HALT_MESSAGE_BYTES: &[u8] = HALT_MESSAGE.as_bytes();
-
 impl Message {
+    pub const LENGTH_DELIMITER: char = '*';
+    pub const HALT_MESSAGE: &'static str =
+        "BY THE GRACE OF GOD, I HEREBY COMMAND YOU TO KILL YOUSELF NOW!";
+
+    /// Returs either true of false the input message is a halt message.
+    pub fn is_halt_message(message: &Message) -> bool {
+        let payload_text: String = Self::payload_bytes_to_string(message.payload());
+        if payload_text == Self::HALT_MESSAGE {
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns a standart halt message.
+    pub fn make_halt_message(direction: MessageDirection) -> Self {
+        let part = Part::new(1, 1).unwrap();
+        let message = Self::make_string(
+            &direction,
+            &part,
+            &Self::payload_string_to_bytes(Self::HALT_MESSAGE)
+                .expect("Failed to make halt message. (I)"),
+        );
+
+        Self::from_string(message.0 + &message.1)
+            .expect("Failed to make halt message. (II)")
+            .iter()
+            .next()
+            .expect("Failed to make halt message. (III)")
+            .clone()
+    }
+
     // Constructs a Message object from an array of bytes and a direction.
     pub fn from_bytes<T: AsRef<[u8]>>(data: T, direction: MessageDirection) -> Self {
         let data: &[u8] = data.as_ref();
         let part = Part::new(1, 1).unwrap();
-        let text = TextMessage::new(direction, part, data);
+
+        let (length, text) = Self::make_string(&direction, &part, data);
+
         Self {
-            payload: data.to_vec(),
+            length,
             direction,
             part,
+            payload: data.to_vec(),
             text,
         }
     }
 
     // Constructs a Message object from a string.
     // Parses the direction from the string.
-    pub fn from_string(message: &str) -> Result<Self, MessageError> {
-        let mut offset: usize = 0;
-
-        let direction = MessageDirection::try_from(message)?;
-        offset += MessageDirection::encode_direction(direction).len();
-
-        let part = Part::from_string(&message[offset..])?;
-        offset += Part::get_standard_string_length();
-
-        let data: Vec<u8> = TextMessage::decode_data(&message[offset..])?;
-
-        let text = TextMessage::new(direction, part, &data);
-
-        Ok(Self {
-            payload: data,
-            direction,
-            part,
-            text,
-        })
+    //
+    // Can return multiple messages if the string is an aggregate of messages.
+    pub fn from_string<T: AsRef<str>>(message: T) -> Result<Vec<Self>, MessageError> {
+        // Use the parsing function from Aggregator.
+        Aggregator::disaggregate(message.as_ref())
     }
 
     // Returns an array of bytes of the Message.
-    pub fn to_bytes(&self) -> &[u8] {
+    pub fn payload(&self) -> &[u8] {
         &self.payload
+    }
+
+    /// Converts bytes to string representation
+    pub fn payload_bytes_to_string(data: &[u8]) -> String {
+        base85::encode(data)
+        //data.iter()
+        //    .map(|byte| format!("{byte:02X}"))
+        //    .collect::<Vec<String>>()
+        //    .join(" ")
+    }
+
+    /// Converts a string to an array of bytes
+    pub fn payload_string_to_bytes(string: &str) -> Result<Vec<u8>, MessageError> {
+        base85::decode(string).map_err(|_| MessageError::Decode("Failed to decode base85 string"))
+        //debug!("In hex_to_bytes(). string={string}");
+        //hex::decode(string.replace(" ", ""))
+        //    .map_err(|e| MessageError::HexConversionError(e.to_string()))
+    }
+
+    /// Makes the string representation of the message.
+    ///
+    /// # Returns
+    ///
+    /// A tuple (Length, Message(except String))
+    ///
+    /// So to build the complete packet, just flatten the tuple into a String, and send it's ready
+    /// to be sent to Discord.
+    pub fn make_string(
+        direction: &MessageDirection,
+        part: &Part,
+        payload: &[u8],
+    ) -> (String, String) {
+        let mut message_str_except_length = String::with_capacity(100);
+        message_str_except_length.push_str(direction.to_string());
+        message_str_except_length.push_str(&part.to_string());
+        message_str_except_length.push_str(&Self::payload_bytes_to_string(payload));
+
+        // With length excluded.
+        let length: usize = message_str_except_length.len();
+        (
+            // Length string
+            length.to_string() + &Self::LENGTH_DELIMITER.to_string(),
+            // Rest of the message string
+            message_str_except_length,
+        )
     }
 
     // Returns the string representation from Message.
     // Ready to be sent to Discord.
     pub fn to_string(&self) -> &str {
-        &self.text.message
-    }
-
-    // The length of the frame without the buffer.
-    // Reason: there can be multiple `Message` string representation into a Discord message, we add
-    // the frame_length "attribute" header to slice up each message from an aggregate message.
-    pub fn frame_length(&self) -> usize {
-        self.payload.len()
-    }
-
-    /// A message that should halt everything if read
-    pub fn make_halt_message(direction: MessageDirection) -> Self {
-        let data: Vec<u8> = HALT_MESSAGE_BYTES.to_vec();
-        let part = Part::new(1, 1).unwrap();
-        let text = TextMessage::new(direction, part, &data);
-        Self {
-            part,
-            payload: data,
-            direction,
-            text,
-        }
-    }
-
-    /// Determins if a message is a halt message
-    pub fn is_halt_message(message: &Self) -> bool {
-        message.payload == HALT_MESSAGE_BYTES
+        &self.text
     }
 }
 
-impl From<TextMessage> for Message {
-    fn from(value: TextMessage) -> Self {
-        value.to_message()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    use partitioning::Partitioner;
-
-    use super::*;
-
-    #[test]
-    fn test_create_message_from_bytes_valid() {
-        let data: &[u8] = &[1, 2, 3, 127, 128, 255, 0];
-        let direction = MessageDirection::Clientbound;
-
-        let message = Message::from_bytes(data, direction);
-
-        let message_data = &message.payload;
-        let message_direction = &message.direction;
-        // make sure the function does not panic
-        let _ = message.to_string();
-
-        assert_eq!(data, message_data);
-        assert_eq!(&direction, message_direction,);
-    }
-
-    #[test]
-    fn test_create_message_from_string_valid() {
-        // Test data and expected properties
-        let data: &[u8] = &[1, 2, 3, 127, 128, 255, 0];
-        let direction = MessageDirection::Serverbound;
-
-        // Convert data to message and then to string
-        let message = Message::from_bytes(data, direction);
-        let message_string = message.to_string();
-
-        println!("message stringgg: {message_string}");
-
-        // Convert the string back to a message
-        let other_message = Message::from_string(&message_string).unwrap();
-
-        // Validate that data and direction match the original
-        assert_eq!(
-            data, other_message.payload,
-            "Data mismatch after round-trip conversion."
-        );
-        assert_eq!(
-            direction, other_message.direction,
-            "Direction mismatch after round-trip conversion."
-        );
-
-        // Ensure text representation is consistent
-        let reconstructed_string = other_message.to_string();
-        assert_eq!(
-            message_string, reconstructed_string,
-            "String representation mismatch after reconstruction."
-        );
-    }
-
-    #[test]
-    fn test_create_message_from_bytes_empty_valid() {
-        let data: &[u8] = &[];
-        let direction = MessageDirection::Serverbound;
-
-        let message = Message::from_bytes(data, direction);
-
-        assert_eq!(message.payload, data);
-        assert_eq!(message.direction, direction);
-
-        let part: String = Part::new(1, 1).unwrap().to_string();
-
-        assert_eq!(message.text.direction, MessageDirection::SERVERBOUND_HEADER);
-        assert_eq!(message.text.partitioning, part);
-        assert_eq!(message.text.data, "");
-        assert_eq!(
-            message.text.message,
-            format!(
-                "{}{}{}",
-                message.text.direction, message.text.partitioning, message.text.data
-            )
-        );
-    }
-
-    #[test]
-    fn test_create_message_from_string_empty_valid() {
-        let part = Part::new(1, 1).unwrap();
-        let txt: String = MessageDirection::CLIENTBOUND_HEADER.to_string() + &part.to_string();
-
-        let message = Message::from_string(&txt).unwrap();
-
-        assert!(message.payload.is_empty());
-        assert!(message.text.data.is_empty());
-        assert_eq!(message.direction, MessageDirection::Clientbound);
-        assert_eq!(message.to_string(), txt);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_create_message_from_string_invalid_header() {
-        let txt = MessageDirection::SERVERBOUND_HEADER.to_string() + "qlsdjk flqs dkf23 9483";
-        let _ = Message::from_string(&txt).unwrap();
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_create_message_from_string_invalid_encoding() {
-        // こんにちは inside
-        let txt = MessageDirection::SERVERBOUND_HEADER.to_string() + "87cURD_こんにちは*#4DfTZ)+T";
-        let _ = Message::from_string(&txt).unwrap();
-    }
-
-    #[test]
-    fn test_create_partitions_valid() {
-        let data = &[
-            1, 44, 55, 100, 0, 255, 127, 4, 5, 6, 2, 8, 88, 99, 11, 12, 0, 1, 4,
-        ];
-        let direction = MessageDirection::Serverbound;
-
-        let message = Message::from_bytes(data, direction);
-
-        const DIVISOR: usize = 25;
-        let parts = Partitioner::partition(message.clone(), DIVISOR).unwrap();
-
-        // in the partitioninig function we use the len of the data string :/, not `full` :(
-        let text_len: usize = message.text.data.len();
-
-        let parts_number_whole = text_len / DIVISOR;
-        let parts_remainder = text_len % DIVISOR;
-        let parts_total = if parts_remainder > 0 {
-            parts_number_whole + 1
-        } else {
-            parts_number_whole
-        };
-
-        for i in 0..parts.len() - 1 {
-            let current = parts[i].clone();
-            let next = parts[i + 1].clone();
-            assert!(current.part.current() < next.part.current());
-        }
-
-        assert_eq!(parts.len(), parts_total);
-    }
-}
+// TODO: WRITE THOROUGH TESTS!

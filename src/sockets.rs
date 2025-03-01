@@ -128,7 +128,7 @@ async fn handle_channel_to_socket_offload(
 
         match packet {
             Some(packet) => {
-                if let Err(e) = socket.write_all(packet.to_bytes()).await {
+                if let Err(e) = socket.write_all(packet.payload()).await {
                     error!("Failed to send message to socket: {e}");
                     stop_tx.send(()).unwrap();
                     debug!("Failed sending message to socket. Broadcast stop signal");

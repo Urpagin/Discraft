@@ -181,7 +181,7 @@ async fn server(
         let mut socket = TcpStream::connect(format!("{SERVER_ADDRESS}:{SERVER_PORT}")).await?;
 
         // Send the first message
-        if let Err(err) = socket.write_all(discord_msg.to_bytes()).await {
+        if let Err(err) = socket.write_all(discord_msg.payload()).await {
             error!("Failed to send first packet to MC Server: {err}");
             continue;
         }

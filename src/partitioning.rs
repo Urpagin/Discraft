@@ -7,98 +7,25 @@
 //! - aggregation is taking multiple "small" `Message`s and transformaing them into a single, or
 //!   multiple, "big" compound `AggregateMessage`.
 
-use log::{debug, error};
 use once_cell::sync::Lazy;
 
 use crate::{
     discord::DiscordBot,
-    message::{MessageDirection, MessageError},
+    message::{Message, MessageDirection, MessageError},
 };
-
-use super::message::Message;
-
-/// Represents the text part of a message
-#[derive(Clone, Debug)]
-pub struct TextMessage {
-    /// e.g.: "**Squidward says**: "
-    pub direction: String,
-
-    /// e.g.: "1/2"
-    pub partitioning: String,
-
-    /// The actual data bytes of the packet but as a string
-    pub data: String,
-
-    /// The whole text ready to be sent
-    ///
-    /// direction + partitioning + data
-    pub message: String,
-}
-
-impl TextMessage {
-    pub fn new<T: AsRef<[u8]>>(direction: MessageDirection, part: Part, data: T) -> Self {
-        let data: &[u8] = data.as_ref();
-
-        let direction_text: String = MessageDirection::encode_direction(direction).to_string();
-        let partitioning_text: String = part.to_string();
-        let data_text: String = Self::encode_data(data);
-
-        let message_text: String = format!("{direction_text}{partitioning_text}{data_text}");
-
-        Self {
-            direction: direction_text,
-            partitioning: partitioning_text,
-            data: data_text,
-
-            message: message_text,
-        }
-    }
-
-    pub fn from_message(message: &Message) -> Self {
-        TextMessage::new(message.direction, message.part, message.to_bytes())
-    }
-
-    pub fn to_message(&self) -> Message {
-        // .unwrap() because self is valid.
-        Message::from_string(&self.message).unwrap()
-    }
-
-    /// Converts bytes to string representation
-    fn encode_data(data: &[u8]) -> String {
-        base85::encode(data)
-        //data.iter()
-        //    .map(|byte| format!("{byte:02X}"))
-        //    .collect::<Vec<String>>()
-        //    .join(" ")
-    }
-
-    /// Converts a string to an array of bytes
-    pub fn decode_data(string: &str) -> Result<Vec<u8>, MessageError> {
-        base85::decode(string).map_err(|_| MessageError::Decode("Failed to decode base85 string"))
-        //debug!("In hex_to_bytes(). string={string}");
-        //hex::decode(string.replace(" ", ""))
-        //    .map_err(|e| MessageError::HexConversionError(e.to_string()))
-    }
-}
-
-// impl From<TextMessage> for Message
-// is also defined.
-impl From<Message> for TextMessage {
-    fn from(value: Message) -> Self {
-        Self::from_message(&value)
-    }
-}
 
 // Functions to partition and merge `Message`s.
 pub struct Partitioner {}
 
 impl Partitioner {
-    /// This function partitions by text, and not bytewise!
+    /// This function partitions BY TEXT, and not bytewise!
     /// Takes a message and returns smaller messages that all fit within the character limit.
     ///
     /// If the input message is already smaller than the max chars, it is returned.
     ///
-    /// IMPORTANT: Everything might just blow up if the message encoding is done with UTF-8 characters.
+    /// # ! IMPORTANT !
+    ///
+    /// IMPORTANT!!: Everything might just blow up if the message encoding is done with UTF-8 characters (non-ASCII).
     pub fn partition(message: Message, str_len_limit: usize) -> Result<Vec<Message>, MessageError> {
         // Check for invalid `max` values
         if str_len_limit == 0 {
@@ -107,17 +34,21 @@ impl Partitioner {
             ));
         }
 
-        let direction: &String = &message.text.direction;
-        let payload: String = message.text.data;
+        let length: &String = &message.length;
+        let direction: &str = message.direction.to_string();
+        // Potentially unoptimized doing this every time.
+        let payload: String = Message::payload_bytes_to_string(message.payload());
+        // Size of the payload (STRING)
         let payload_len: usize = payload.len();
 
-        // Size of the payload (STRING)
-        let header_size: usize = direction.len() + Part::get_standard_string_length();
+        let header_size: usize =
+            length.len() + direction.len() + Part::get_standard_string_length();
         if str_len_limit <= header_size {
             return Err(MessageError::Partitioning(
                 "length limit is too small to accommodate the header",
             ));
         }
+
         // The number of payload characters we can put while still being able to put the header.
         let payload_slice_size: usize = str_len_limit - header_size;
 
@@ -148,6 +79,8 @@ impl Partitioner {
             current_part += 1;
 
             let start: usize = put_payload_chars;
+            // What? (my future me is having trouble here, start + payload_slice_size is always
+            // greater than payload_len, right...?)
             let stop = usize::min(start + payload_slice_size, payload_len); // Prevent out-of-bounds slicing
             let sliced_payload: &str = &payload[start..stop];
             put_payload_chars = stop; // Update position
@@ -157,8 +90,13 @@ impl Partitioner {
             part_buffer.push_str(&direction);
             part_buffer.push_str(&part);
             part_buffer.push_str(sliced_payload);
-            let part = Message::from_string(&part_buffer)?;
-            parts.push(part);
+
+            let length: String =
+                part_buffer.len().to_string() + &Message::LENGTH_DELIMITER.to_string();
+
+            // A whole message is [Lenght, Direction, Part, Payload]
+            let part = Message::from_string(length + &part_buffer)?;
+            parts.extend_from_slice(&part);
         }
 
         Ok(parts)
@@ -181,7 +119,7 @@ impl Partitioner {
 
         // Merge all parts
         for part in parts {
-            payload_buffer.extend_from_slice(part.to_bytes());
+            payload_buffer.extend_from_slice(part.payload());
         }
 
         // Create and return the merged Message
@@ -321,9 +259,12 @@ impl Aggregator {
     const LENGTH_END_FLAG: &'static str = "*";
 
     /// Aggregates multiple messages into a single one.
-
+    /// Conceptual example: [["12", "34", 56]] into [["123456"]].
+    ///
+    /// Note: Inputted messages will be partitionned if too large.
     pub fn aggregate<T: AsRef<[Message]>>(messages: T) -> Result<Vec<String>, MessageError> {
         let messages: &[Message] = messages.as_ref();
+
         // Partition messages that may need splitting.
         let parts: Vec<Message> = messages
             .iter()
@@ -338,22 +279,7 @@ impl Aggregator {
 
         // Process each part to form a segment.
         for part in parts {
-            let part_str = part.to_string();
-            // Build segment: flag + length + '*' + data
-            let segment = format!(
-                "{}{}{}{}",
-                MessageType::Aggregated.as_str(),
-                part_str.len(),
-                Self::LENGTH_END_FLAG,
-                part_str
-            );
-
-            // Check if the segment itself is too large.
-            if segment.len() > DiscordBot::MAX_MESSAGE_LENGTH_ALLOWED {
-                return Err(MessageError::Aggregation(
-                    "Segment too large for a single message",
-                ));
-            }
+            let segment: &str = part.to_string();
 
             // If appending the segment would overflow the current buffer, flush it.
             if buffer.len() + segment.len() > DiscordBot::MAX_MESSAGE_LENGTH_ALLOWED {
@@ -377,24 +303,11 @@ impl Aggregator {
     pub fn disaggregate(aggregate_message: &str) -> Result<Vec<Message>, MessageError> {
         let mut messages: Vec<Message> = Vec::new();
         let mut offset: usize = 0;
-        let total_len = aggregate_message.len();
+        let total_len: usize = aggregate_message.len();
+        let mut messages_char_counter: usize = 0;
 
-        while offset < total_len {
-            // Parse flag (one character)
-            let flag =
-                aggregate_message
-                    .get(offset..offset + 1)
-                    .ok_or(MessageError::Aggregation(
-                        "Failed to parse the message flag.",
-                    ))?;
-            offset += 1;
-
-            if flag != MessageType::Aggregated.as_str() {
-                return Err(MessageError::Aggregation(
-                    "Message flag unknown. Expected aggregation message flag.",
-                ));
-            }
-
+        // Suspicious convoluted loop; bugs may be hidden.
+        while aggregate_message.len() != messages_char_counter {
             // Parse the length field until the '*' delimiter is found.
             let mut var_length = String::new();
             while offset < total_len {
@@ -416,60 +329,32 @@ impl Aggregator {
                 var_length.push_str(c);
             }
 
-            // Convert the length field to a number.
-            let msg_len: usize = var_length.parse().map_err(|_| {
-                MessageError::Aggregation("Failed to parse variable length into a number.")
-            })?;
+            // Add length of the length.
+            messages_char_counter += var_length.len() + Message::LENGTH_DELIMITER.len_utf8();
+            let message_length: usize = var_length
+                .parse()
+                .map_err(|_| MessageError::Aggregation("Failed to parse the message length."))?;
+            // And add the length of the header(except the Length) + payload.
+            messages_char_counter += message_length;
 
-            // Extract the message data of the specified length.
-            let msg_data = aggregate_message
-                .get(offset..offset + msg_len)
-                .ok_or(MessageError::Aggregation("Failed to parse message data."))?;
-            offset += msg_len;
+            // Tries to read the first direction from the string.
+            let direction = MessageDirection::from_string(&aggregate_message[offset..])?;
+            offset += direction.to_string().len();
 
-            // Append parsed message
-            messages.push(Message::from_string(msg_data)?);
+            let part = Part::from_string(&aggregate_message[offset..])?;
+            offset += part.to_string().len();
+
+            let payload: &str = aggregate_message
+                .get(offset..message_length)
+                .ok_or(MessageError::Aggregation("Failed to slice the payload."))?;
+
+            // May be unoptimized, maybe use from_string().
+            messages.push(Message::from_bytes(
+                Message::payload_string_to_bytes(payload)?,
+                direction,
+            ));
         }
 
         Ok(messages)
-    }
-}
-
-/// Represents a message type.
-/// Its string representation prepended to every message.
-///
-/// Use MessageType::Normal.as_str()
-/// Use MessageType::Aggregated.as_str()
-#[derive(Debug, Clone)]
-pub enum MessageType {
-    Normal,
-    Aggregated,
-}
-
-impl MessageType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            MessageType::Normal => "N",
-            MessageType::Aggregated => "A",
-        }
-    }
-
-    /// Decodes the direction from text
-    pub fn decode_direction(text: &str) -> Result<Self, MessageError> {
-        Self::try_from(text)
-    }
-}
-
-impl TryFrom<&str> for MessageType {
-    type Error = MessageError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value.get(1..0).ok_or(MessageError::Decode(
-            "Cannot parse message type, no string.",
-        ))? {
-            "N" => Ok(MessageType::Normal),
-            "A" => Ok(MessageType::Aggregated),
-            _ => Err(MessageError::Decode("Unknown message type.")),
-        }
     }
 }

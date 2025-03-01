@@ -149,7 +149,7 @@ impl DiscordBot {
 
 /// Logs all packet parts into a file.
 fn debug_logging_parts(message: &message::Message) -> () {
-    let part: &str = &message.text.partitioning;
+    let part: &str = &message.part.to_string();
     let side: &str = match CURRENT_SIDE.get().unwrap() {
         cli::Mode::Server { .. } => "server",
         cli::Mode::Client { .. } => "client",
@@ -253,46 +253,48 @@ impl EventHandler for Handler {
         let message_content: String = msg.content;
 
         match message::Message::from_string(&message_content) {
-            Ok(message) => {
-                if message::Message::is_halt_message(&message) {
-                    info!("RECEIVED DISCORD HALT MESSAGE");
-                    self.stop_tx.send(()).unwrap();
-                    debug!("Send stop signal");
-                }
-
-                let current_side: &cli::Mode = &self.side;
-                let message_side: &message::MessageDirection = &message.direction;
-
-                // Return if the message direction does not correspond with our side.
-                if !message_direction_matches_side(current_side, message_side) {
-                    return;
-                }
-
-                // From here, the message is for us :
-
-                match cache_or_merge_message(message.clone()).await {
-                    Ok(maybe_message) => {
-                        if let Some(merged_message) = maybe_message {
-                            // Send message to tx
-                            if let Err(err) = self.message_tx.send(merged_message).await {
-                                warn!("Failed to enqueue message from Discord: {err}");
-                            }
-                            debug!(
-                                "ENQUEUED DISCORD MESSAGE TO TCP CHANNEL. {}/{}",
-                                message.part.current(),
-                                message.part.total()
-                            )
-                        } else {
-                            debug!(
-                                "CACHING DISCORD RECEIVED MESSAGE. {}/{}",
-                                message.part.current(),
-                                message.part.total()
-                            );
-                        }
+            Ok(messages) => {
+                for message in messages {
+                    if message::Message::is_halt_message(&message) {
+                        info!("RECEIVED DISCORD HALT MESSAGE");
+                        self.stop_tx.send(()).unwrap();
+                        debug!("Send stop signal");
                     }
-                    Err(err) => {
-                        error!("Failed to cache or merge message: {err}");
+
+                    let current_side: &cli::Mode = &self.side;
+                    let message_side: &message::MessageDirection = &message.direction;
+
+                    // Return if the message direction does not correspond with our side.
+                    if !message_direction_matches_side(current_side, message_side) {
                         return;
+                    }
+
+                    // From here, the message is for us :
+
+                    match cache_or_merge_message(message.clone()).await {
+                        Ok(maybe_message) => {
+                            if let Some(merged_message) = maybe_message {
+                                // Send message to tx
+                                if let Err(err) = self.message_tx.send(merged_message).await {
+                                    warn!("Failed to enqueue message from Discord: {err}");
+                                }
+                                debug!(
+                                    "ENQUEUED DISCORD MESSAGE TO TCP CHANNEL. {}/{}",
+                                    message.part.current(),
+                                    message.part.total()
+                                )
+                            } else {
+                                debug!(
+                                    "CACHING DISCORD RECEIVED MESSAGE. {}/{}",
+                                    message.part.current(),
+                                    message.part.total()
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            error!("Failed to cache or merge message: {err}");
+                            return;
+                        }
                     }
                 }
             }
