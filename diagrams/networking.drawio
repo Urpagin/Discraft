@@ -1,0 +1,49 @@
+<mxfile host="app.diagrams.net" agent="Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0" version="25.0.3">
+  <diagram name="Page-1" id="IMw7OfwbsddVRpZzLbgC">
+    <mxGraphModel dx="1718" dy="922" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="-vX8LJjGPZEXhNF9d7Yf-1" value="&lt;div&gt;DISCORD GUILD&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="522" y="250" width="125" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="-vX8LJjGPZEXhNF9d7Yf-9" value="&lt;div&gt;TXT MSG&lt;/div&gt;" style="shape=flexArrow;endArrow=classic;startArrow=classic;html=1;rounded=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" target="-vX8LJjGPZEXhNF9d7Yf-1">
+          <mxGeometry width="100" height="100" relative="1" as="geometry">
+            <mxPoint x="360" y="278" as="sourcePoint" />
+            <mxPoint x="460" y="300" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="-vX8LJjGPZEXhNF9d7Yf-12" value="TXT MSG" style="shape=flexArrow;endArrow=classic;startArrow=classic;html=1;rounded=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1">
+          <mxGeometry width="100" height="100" relative="1" as="geometry">
+            <mxPoint x="647" y="277.58" as="sourcePoint" />
+            <mxPoint x="809" y="277.58" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="-vX8LJjGPZEXhNF9d7Yf-13" value="&lt;div&gt;APP (CLIENT)&lt;/div&gt;" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="238" width="120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="-vX8LJjGPZEXhNF9d7Yf-14" value="&lt;div&gt;APP (SERVER)&lt;/div&gt;" style="ellipse;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="810" y="238" width="120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="-vX8LJjGPZEXhNF9d7Yf-19" value="MC CLIENT" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="440" width="120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="-vX8LJjGPZEXhNF9d7Yf-21" value="TCP CONNECTION" style="shape=flexArrow;endArrow=classic;startArrow=classic;html=1;rounded=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" edge="1" parent="1" source="-vX8LJjGPZEXhNF9d7Yf-19" target="-vX8LJjGPZEXhNF9d7Yf-13">
+          <mxGeometry width="100" height="100" relative="1" as="geometry">
+            <mxPoint x="160" y="430" as="sourcePoint" />
+            <mxPoint x="260" y="330" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="-vX8LJjGPZEXhNF9d7Yf-22" value="MC SERVER" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;" vertex="1" parent="1">
+          <mxGeometry x="810" y="440" width="120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="-vX8LJjGPZEXhNF9d7Yf-23" value="TCP CONNECTION" style="shape=flexArrow;endArrow=classic;startArrow=classic;html=1;rounded=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" edge="1" parent="1" source="-vX8LJjGPZEXhNF9d7Yf-22">
+          <mxGeometry width="100" height="100" relative="1" as="geometry">
+            <mxPoint x="980" y="390" as="sourcePoint" />
+            <mxPoint x="869.58" y="318" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
