@@ -83,6 +83,11 @@ impl Partitioner {
         // Exits when all the payload has been partitioned
         // Also, we have computted the number of parts, surely there's a way to not use a while
         // loop.
+
+        // On the second and other round of the while loop,
+        // this offset has to be added to the start idx in the slicing of the string payload.
+        // Because we make sure the sliced string payload is always valid (no nibbles at the end).
+        let mut hex_validity_offset: usize = 0;
         while put_payload_chars < payload.len() {
             println!("FLAG IV");
             let part: String = Part::new(current_part, total_parts)?.to_string();
@@ -92,7 +97,25 @@ impl Partitioner {
             // What? (my future me is having trouble here, start + payload_slice_size is always
             // greater than payload_len, right...?)
             let stop = usize::min(start + payload_slice_size, payload_len); // Prevent out-of-bounds slicing
-            let sliced_payload: &str = &payload[start..stop];
+
+            // --- dev in progress BEGIN ---
+
+            // PROBLEM: THE SLICED PAYLOAD CANNOT CUT ANYWHERE, IT MUST CONTAIN A SEQUENCE OF BYTES
+            // IN HEX, NO PARTIAL-BYTE NIBBLE THINGGY.
+
+            // TODO: Ok, so we need to make a function that slices the payload string into parts,
+            // the function needs to slice the hex in a valid manner, no nybbles.
+            // However, it seems quite long and tedious to do with my tiny head, so I'm off...
+
+            // Not even == partial hex.
+            if &payload[start..stop].replace(" ", "").len() % 2 != 0 {
+                hex_validity_offset += 1;
+            }
+
+            let sliced_payload: &str = &payload[start - hex_validity_offset..stop];
+
+            // --- dev in progress END ---
+
             put_payload_chars = stop; // Update position
             println!("FLAG V");
 
@@ -112,6 +135,9 @@ impl Partitioner {
             );
 
             // A whole message is [Lenght, Direction, Part, Payload]
+            // TODO: IS THIS WHERE "FAILED TO DECODE HEX"?
+            // TODO: IS THIS WHERE "FAILED TO DECODE HEX"?
+            // TODO: IS THIS WHERE "FAILED TO DECODE HEX"?
             let part = Message::from_string(length + &part_buffer)?;
             parts.extend_from_slice(&part);
             println!("FLAG VII");
@@ -369,6 +395,10 @@ impl Aggregator {
 
             // May be unoptimized, maybe use from_string().
             messages.push(Message::from_bytes(
+                // TODO: STRING TO BYTES USED HERE !!!!!!!!!
+                // TODO: STRING TO BYTES USED HERE !!!!!!!!!
+                // TODO: STRING TO BYTES USED HERE !!!!!!!!!
+                // TODO: STRING TO BYTES USED HERE !!!!!!!!!
                 Message::payload_string_to_bytes(payload)?,
                 direction,
             ));

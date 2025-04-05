@@ -16,7 +16,7 @@ pub enum MessageError {
     Direction(&'static str),
 
     #[error("Conversion error: {0}")]
-    Decode(&'static str),
+    Decode(String),
 
     #[error("Invalid partitioning: {0}")]
     Partitioning(&'static str),
@@ -152,6 +152,8 @@ impl Message {
         &self.payload
     }
 
+    // TODO: (IF HEX ENCODING) Make sure no nibbles are allowed, only full bytes.
+
     /// Converts bytes to string representation
     pub fn payload_bytes_to_string(data: &[u8]) -> String {
         println!("payload_bytes_to_string() input: {data:?}");
@@ -172,8 +174,17 @@ impl Message {
         //     .map_err(|_| MessageError::Decode("Failed to decode base85 string"))
 
         //debug!("In hex_to_bytes(). string={string}");
+        println!("payload_string_to_bytes() INPUT: {string:?}");
         hex::decode(string.replace(" ", ""))
-            .map_err(|e| MessageError::Decode("failed to decode hex"))
+            .map_err(|e| MessageError::Decode(format!("Failed to decode hex: {e}")))
+        //
+        // println!("payload_string_to_bytes() input: {string:?}");
+        // let res: Vec<u8> = string
+        //     .split_whitespace()
+        //     .filter_map(|hex| u8::from_str_radix(hex, 16).ok())
+        //     .collect();
+        //
+        // Ok(res)
     }
 
     /// Makes the string representation of the message.
