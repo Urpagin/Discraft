@@ -6,6 +6,7 @@ use std::fmt::Debug;
 use base64::{engine::general_purpose, Engine};
 use lazy_static::lazy_static;
 use once_cell::sync::Lazy;
+use serenity::model::voice_gateway::payload;
 use thiserror::Error;
 
 use crate::partitioning::{self, Aggregator, Part};
@@ -94,19 +95,18 @@ pub struct Message {
     text: String,
 }
 
-const HALT_DATA: &[u8; 8] = &[3, 4, 4, 0, 1, 1, 1, 1];
-pub static HALT_MESSAGE_DECODED: Lazy<String> = Lazy::new(|| base85::encode(&HALT_DATA.to_vec()));
+const HALT_DATA: &[u8; 37] = &[
+    3, 4, 4, 0, 1, 1, 1, 1, 0, 0, 0, 0, 127, 127, 127, 127, 127, 127, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+    9, 9, 9, 9, 9, 0, 1, 1, 100,
+];
 
 impl Message {
     pub const LENGTH_DELIMITER: char = '~';
+
     /// Returs either true of false the input message is a halt message.
     pub fn is_halt_message(message: &Message) -> bool {
-        let payload_text: String = Self::payload_bytes_to_string(message.payload());
-        if payload_text == *HALT_MESSAGE_DECODED {
-            true
-        } else {
-            false
-        }
+        let control = Self::make_halt_message(message.direction);
+        control == *message
     }
 
     /// Returns a standart halt message.
@@ -163,7 +163,7 @@ impl Message {
         data.iter()
             .map(|byte| format!("{byte:02X}"))
             .collect::<Vec<String>>()
-            .join(" ")
+            .join("")
     }
 
     /// Converts a string to an array of bytes
@@ -174,7 +174,22 @@ impl Message {
         //     .map_err(|_| MessageError::Decode("Failed to decode base85 string"))
 
         //debug!("In hex_to_bytes(). string={string}");
+
+        // TERRIBLE PERFORMANCE todo
+        // let mut buffer = String::with_capacity(string.len() + string.len() / 4 + 1);
+        // for (idx, char) in string.char_indices() {
+        //     buffer += &char.to_string();
+        //     if (idx + 1) % 2 == 0 {
+        //         buffer += " ";
+        //     }
+        // }
         println!("payload_string_to_bytes() INPUT: {string:?}");
+        let modulo = string.len() % 2 == 0;
+        if modulo {
+            println!("string to byte input is EVEN");
+        } else {
+            println!("string to byte input is ODD");
+        }
         hex::decode(string.replace(" ", ""))
             .map_err(|e| MessageError::Decode(format!("Failed to decode hex: {e}")))
         //
@@ -219,6 +234,19 @@ impl Message {
     // Ready to be sent to Discord.
     pub fn to_string(&self) -> &str {
         &self.text
+    }
+}
+
+impl PartialEq for Message {
+    fn eq(&self, other: &Self) -> bool {
+        if self.direction == other.direction
+            && self.payload == other.payload
+            && self.to_string() == other.to_string()
+        {
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -322,13 +350,10 @@ mod tests {
     #[test]
     fn test_halt_message() {
         let halt_msg = Message::make_halt_message(MessageDirection::Clientbound);
+        println!("halt_msg: {halt_msg:?}");
 
         // Check that the halt message is recognized.
         assert!(Message::is_halt_message(&halt_msg));
-
-        // Verify that decoding the payload recovers the halt message string.
-        let payload_decoded = Message::payload_bytes_to_string(halt_msg.payload());
-        assert_eq!(payload_decoded, *HALT_MESSAGE_DECODED);
     }
 
     #[test]

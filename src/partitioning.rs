@@ -27,7 +27,8 @@ impl Partitioner {
     ///
     /// IMPORTANT!!: Everything might just blow up if the message encoding is done with UTF-8 characters (non-ASCII).
     pub fn partition(message: Message, str_len_limit: usize) -> Result<Vec<Message>, MessageError> {
-        println!("partition() input: {message:?}");
+        println!("partition() input msg: {message:?}");
+        println!("partition() input limit: {message:?}");
         // Check for invalid `max` values
         if str_len_limit == 0 {
             return Err(MessageError::Partitioning(
@@ -65,6 +66,68 @@ impl Partitioner {
         } else {
             whole_parts
         };
+
+        // testing2 begin--
+
+        // Where the partition will be stored each loop iteration
+        let mut part_buffer: String = String::with_capacity(str_len_limit);
+
+        // All the parts that make up the inputted message
+        let mut parts: Vec<Message> = Vec::with_capacity(total_parts);
+
+        let mut offset: usize = 0;
+
+        println!("There are {total_parts} parts");
+        println!("The payload slice size {payload_slice_size}");
+        println!("The remainder is {remainder}");
+
+        for i in 1..=total_parts {
+            let part: String = Part::new(i, total_parts)?.to_string();
+            println!("payload string length: {}", payload.len());
+
+            let mut slice = if i != total_parts {
+                payload[offset..(i * payload_slice_size)].to_owned()
+            } else {
+                payload[offset..].to_owned()
+            };
+
+            //let mut slice = payload[range].to_owned();
+
+            // if hex is odd (badly cut). EXCEPT the last part.
+            if slice.len() % 2 != 0 && i != total_parts {
+                slice = payload[offset..i * payload_slice_size - 1].to_owned();
+                offset += payload_slice_size - 1;
+            }
+
+            // if hex is even (OK)
+            if i != total_parts {
+                // not total parts.
+                offset += payload_slice_size;
+            }
+
+            // if hex is odd ON THE LAST PART
+            if slice.len() % 2 != 0 && i == total_parts {
+                // Last part is not good:
+                slice += "0";
+                // Add 0 at the end to make it even.
+            }
+
+            // Construct the full partition string
+            part_buffer.clear();
+            part_buffer.push_str(&direction);
+            part_buffer.push_str(&part);
+            part_buffer.push_str(&slice);
+
+            let length: String =
+                part_buffer.len().to_string() + &Message::LENGTH_DELIMITER.to_string();
+
+            // A whole message is [Lenght, Direction, Part, Payload]
+            let part = Message::from_string(length + &part_buffer)?;
+            parts.extend_from_slice(&part);
+        }
+
+        // testing2 end--
+        return Ok(parts);
 
         println!("FLAG II");
 
@@ -422,6 +485,7 @@ mod tests {
     }
     use crate::message::{Message, MessageDirection, MessageError};
     use discord::DiscordBot;
+    use serenity::model::voice_gateway::payload;
 
     // Helper function to create a Message from a given payload string.
     fn create_message(payload: &str, direction: MessageDirection) -> Message {
@@ -447,6 +511,14 @@ mod tests {
 
     #[test]
     fn test_partition_message_split() {
+        // let payload = "x".repeat(100);
+        // let limit = 50;
+        // let message = create_message(&payload, MessageDirection::Serverbound);
+        // let parts = Partitioner::partition(message, limit).unwrap();
+        // for part in parts {
+        //     println!("part: {part:?}");
+        // }
+        // return;
         // A longer payload should be partitioned into multiple parts.
         let payload = "This is a long message that should be split into multiple parts because it exceeds the allowed limit.";
         let message = create_message(payload, MessageDirection::Serverbound);
