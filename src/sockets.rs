@@ -1,6 +1,7 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use crate::message;
+use crate::{message, partitioning};
 use log::{debug, error, warn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -50,50 +51,67 @@ pub async fn handle_receive_socket(
     }
 }
 
+use tokio::time::interval;
+
 async fn handle_receive_socket_offload(
     mut socket: OwnedReadHalf,
     tx: mpsc::Sender<message::Message>,
     stop_tx: broadcast::Sender<()>,
     messages_direction: message::MessageDirection,
 ) {
-    // Pre-allocate some buffer space to reduce allocations.
     let mut buffer = Vec::with_capacity(8192);
+    let mut buffer_aggregate = Vec::with_capacity(100);
+
+    let mut tick = interval(Duration::from_millis(100));
 
     loop {
-        // Loop that read all the data on the socket
-        match socket.read_buf(&mut buffer).await {
-            Ok(0) => {
-                warn!("Socket closed by the peer.");
-                let _ = stop_tx.send(());
-                debug!("Socket error, broadcast stop signal.");
-                return;
+        tokio::select! {
+            // Socket read event
+            result = socket.read_buf(&mut buffer) => {
+                match result {
+                    Ok(0) => {
+                        warn!("Socket closed by the peer.");
+                        let _ = stop_tx.send(());
+                        debug!("Socket error, broadcast stop signal.");
+                        return;
+                    }
+                    Ok(read) => {
+                        debug!("Received TCP packet from MINECRAFT [{read}B]");
+                        let message = message::Message::from_bytes(&buffer, messages_direction);
+                        buffer_aggregate.push(message.clone());
+                        buffer.clear();
+                    }
+                    Err(e) => {
+                        error!("Failed reading the TCP socket: {e}");
+                        let _ = stop_tx.send(());
+                        debug!("Socket error, broadcast stop signal.");
+                        return;
+                    }
+                }
             }
-            Ok(read) => {
-                debug!("Received TCP packet from MINECRAFT [{read}B]");
-            }
-            Err(e) => {
-                error!("Failed reading the TCP socket: {e}");
-                let _ = stop_tx.send(());
-                debug!("Socket error, broadcast stop signal.");
-                return;
+            // 500ms tick event
+            _ = tick.tick() => {
+                if !buffer_aggregate.is_empty() {
+                    for msg_str in partitioning::Aggregator::aggregate(&buffer_aggregate)
+                        .expect("Error in aggregation")
+                    {
+                        for msg in message::Message::from_string(msg_str)
+                            .expect("Error in message from string")
+                        {
+                            if let Err(e) = tx.send(msg).await {
+                                error!("Failed sending message through channel: {e}");
+                                let _ = stop_tx.send(());
+                                debug!("mpsc channel error, broadcast stop signal");
+                                return;
+                            } else {
+                                debug!("Sent TCP packet message through the mpsc channel");
+                            }
+                        }
+                    }
+                    buffer_aggregate.clear();
+                }
             }
         }
-
-        // Construct the message
-        let message = message::Message::from_bytes(&buffer, messages_direction);
-
-        // Send the buffer through the channel
-        if let Err(e) = tx.send(message).await {
-            error!("Failed sending message through channel: {e}");
-            let _ = stop_tx.send(());
-            debug!("mpsc channel error, broadcast stop signal");
-            return;
-        } else {
-            debug!("Sent TCP packet message through the mpsc channel");
-        }
-
-        // Clear buffer for the next read cycle
-        buffer.clear();
     }
 }
 

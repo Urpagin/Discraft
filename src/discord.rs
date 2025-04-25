@@ -182,7 +182,7 @@ fn make_partitions(message: message::Message) -> Result<Vec<CreateMessage>, mess
     }
 }
 
-/// Caching for incomming Discord messages.
+/// Caching for incoming Discord messages.
 mod cache {
     use dashmap::DashMap;
     use log::{debug, warn};

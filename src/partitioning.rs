@@ -257,7 +257,9 @@ impl Part {
                 "current must be between 1 and total (inclusive).",
             ))
         } else if total > Self::MAX_TOTAL {
-            Err(MessageError::Partitioning("total cannot exceed MAX_TOTAL."))
+            Err(MessageError::Partitioning(
+                "total cannot exceed MAX_TOTAL. (too many parts, max is 255)",
+            ))
         } else {
             Ok(Self { current, total })
         }
@@ -520,10 +522,11 @@ mod tests {
         // }
         // return;
         // A longer payload should be partitioned into multiple parts.
-        let payload = "This is a long message that should be split into multiple parts because it exceeds the allowed limit.";
+        //let payload = "This is a long message that should be split into multiple parts because it exceeds the allowed limit.";
+        let payload = &"x".repeat(10000);
         let message = create_message(payload, MessageDirection::Serverbound);
         // Set a limit small enough to force splitting.
-        let limit = 50;
+        let limit = 2000;
         let parts = Partitioner::partition(message, limit).expect("Partitioning failed");
         assert!(parts.len() > 1);
 
