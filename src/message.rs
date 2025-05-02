@@ -183,12 +183,9 @@ impl Message {
         //         buffer += " ";
         //     }
         // }
-        println!("payload_string_to_bytes() INPUT: {string:?}");
         let modulo = string.len() % 2 == 0;
         if modulo {
-            println!("string to byte input is EVEN");
         } else {
-            println!("string to byte input is ODD");
         }
         hex::decode(string.replace(" ", ""))
             .map_err(|e| MessageError::Decode(format!("Failed to decode hex: {e}")))
@@ -350,7 +347,6 @@ mod tests {
     #[test]
     fn test_halt_message() {
         let halt_msg = Message::make_halt_message(MessageDirection::Clientbound);
-        println!("halt_msg: {halt_msg:?}");
 
         // Check that the halt message is recognized.
         assert!(Message::is_halt_message(&halt_msg));

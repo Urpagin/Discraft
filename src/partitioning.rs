@@ -83,9 +83,9 @@ impl Partitioner {
 
         for i in 1..=total_parts {
             let part: String = Part::new(i, total_parts)?.to_string();
-            println!("payload string length: {}", payload.len());
+            println!("payload.len()={}", payload.len());
 
-            let mut slice = if i != total_parts {
+            let mut slice: String = if i != total_parts {
                 payload[offset..(i * payload_slice_size)].to_owned()
             } else {
                 payload[offset..].to_owned()
@@ -93,14 +93,13 @@ impl Partitioner {
 
             //let mut slice = payload[range].to_owned();
 
-            // if hex is odd (badly cut). EXCEPT the last part.
+            // if hex is len odd (badly cut). EXCEPT the last part.
             if slice.len() % 2 != 0 && i != total_parts {
-                slice = payload[offset..i * payload_slice_size - 1].to_owned();
+                slice = payload[offset..(i * payload_slice_size - 1)].to_owned();
                 offset += payload_slice_size - 1;
             }
-
-            // if hex is even (OK)
-            if i != total_parts {
+            // if hex len is even (OK). EXCEPT the last part.
+            if slice.len() % 2 == 0 && i != total_parts {
                 // not total parts.
                 offset += payload_slice_size;
             }
@@ -485,8 +484,12 @@ mod tests {
             pub const MAX_MESSAGE_LENGTH_ALLOWED: usize = 100;
         }
     }
-    use crate::message::{Message, MessageDirection, MessageError};
+    use crate::{
+        message::{Message, MessageDirection, MessageError},
+        partitioning,
+    };
     use discord::DiscordBot;
+    use rand::{seq::IndexedRandom, Rng, RngCore};
     use serenity::model::voice_gateway::payload;
 
     // Helper function to create a Message from a given payload string.
@@ -539,6 +542,25 @@ mod tests {
     }
 
     #[test]
+    fn test_partition_message_split2() {
+        for _ in 0..100 {
+            let byte_count: usize = rand::rng().random_range(2001..17_000);
+            let mut data = Vec::with_capacity(byte_count);
+            data.resize(byte_count, 0);
+            rand::rng().fill_bytes(&mut data);
+            // let rnd_hex: String = Message::payload_bytes_to_string(&data);
+
+            let message = Message::from_bytes(data, MessageDirection::Serverbound);
+            let messages = Partitioner::partition(message, 2000);
+            assert!(
+                messages.is_ok(),
+                "Function returned an error: {:?}",
+                messages
+            );
+        }
+    }
+
+    #[test]
     fn test_partition_invalid_limit_zero() {
         let payload = "Test payload";
         let message = create_message(payload, MessageDirection::Clientbound);
@@ -570,6 +592,52 @@ mod tests {
             Message::payload_string_to_bytes(&merged_encoded).expect("Decoding failed");
         let expected: Vec<u8> = [payload1.as_bytes(), payload2.as_bytes()].concat();
         assert_eq!(merged_bytes, expected);
+    }
+
+    #[test]
+    fn test_empty_string_partition() {
+        let input = "";
+        let message = Message::from_string(input);
+
+        assert!(message.is_ok(), "Not Ok()");
+    }
+
+    // #[test]
+    // fn test_empty_string_merge() {
+    //     return;
+    //     todo!()
+    //     let input = "";
+    //     let message1 = Message::from_string(input).unwrap();
+    //     let message2 = Message::from_string(input).unwrap();
+    //
+    //     let merged = Partitioner::merge(vec![message1, message2]);
+    //     assert!(merged.is_ok(), "Not Ok()");
+    // }
+
+    #[test]
+    fn test_merge_messages2() {
+        for _ in 0..1000 {
+            let mut messages = Vec::new();
+            for _ in 0..100 {
+                let byte_count: usize = rand::rng().random_range(1..324);
+                let mut data = Vec::with_capacity(byte_count);
+                data.resize(byte_count, 0);
+                rand::rng().fill_bytes(&mut data);
+                let rnd_hex: String = Message::payload_bytes_to_string(&data);
+                println!("{rnd_hex}");
+
+                let messages_vec = Message::from_string(&rnd_hex).unwrap();
+                let message_first = messages_vec.first();
+                if let Some(msg) = messages_vec.first() {
+                    // Get the first
+                    messages.push(message_first.unwrap().clone())
+                } else {
+                    assert!(false, "Message is None. hex: {rnd_hex:?} / byte_count: {byte_count:?} / data: {data:?}");
+                }
+            }
+
+            let messages_merged = Partitioner::merge(&messages).unwrap();
+        }
     }
 
     #[test]
