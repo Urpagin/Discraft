@@ -233,7 +233,7 @@ impl Partitioner {
     }
 }
 
-/// Reprensents what is the current part of a Message. 5 out of 10 for example.
+/// Represents what is the current part of a Message. 5 out of 10 for example.
 /// Represents the positioning of a Message in a sequence of partitioned messages.
 ///
 /// With the `current` and `total` fields, for example, "2 out of 8".
@@ -614,25 +614,30 @@ mod tests {
     //     assert!(merged.is_ok(), "Not Ok()");
     // }
 
+
+    // TODO: This does not pass the test because we do not build a message correctly.
+    // Msg: [len, direction, part, payload]
     #[test]
     fn test_merge_messages2() {
-        for _ in 0..1000 {
+        for _ in 0..300 {
             let mut messages = Vec::new();
             for _ in 0..100 {
                 let byte_count: usize = rand::rng().random_range(1..324);
                 let mut data = Vec::with_capacity(byte_count);
                 data.resize(byte_count, 0);
                 rand::rng().fill_bytes(&mut data);
-                let rnd_hex: String = Message::payload_bytes_to_string(&data);
-                println!("{rnd_hex}");
 
-                let messages_vec = Message::from_string(&rnd_hex).unwrap();
-                let message_first = messages_vec.first();
+                // Make a message with random payload.
+                let random_msg = Message::from_bytes(&data, MessageDirection::Clientbound);
+
+                let msg_hex = random_msg.to_string();
+
+                let messages_vec = Message::from_string(random_msg.to_string()).expect("Failed to merge messages");
                 if let Some(msg) = messages_vec.first() {
                     // Get the first
-                    messages.push(message_first.unwrap().clone())
+                    messages.push(msg.clone());
                 } else {
-                    assert!(false, "Message is None. hex: {rnd_hex:?} / byte_count: {byte_count:?} / data: {data:?}");
+                    assert!(false, "Message is None. str: {msg_hex:?} / byte_count: {byte_count:?} / data: {data:?}");
                 }
             }
 

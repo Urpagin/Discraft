@@ -72,7 +72,7 @@ impl TryFrom<&str> for MessageDirection {
 }
 
 /// Represents a Message in this application.
-/// That can be intantiated from strings and bytes.
+/// That can be instantiated from strings and bytes.
 /// Message layout [length, direction, part, payload]
 ///
 /// # Length
