@@ -17,47 +17,45 @@ use crate::{
 // Functions to partition and merge `Message`s.
 pub struct Partitioner {}
 
+// TODO: Make this mess into smaller digestible functions.
 impl Partitioner {
-    /// This function partitions BY TEXT, and not bytewise!
-    /// Takes a message and returns smaller messages that all fit within the character limit.
-    ///
-    /// If the input message is already smaller than the max chars, it is returned.
-    ///
-    /// # ! IMPORTANT !
-    ///
-    /// IMPORTANT!!: Everything might just blow up if the message encoding is done with UTF-8 characters (non-ASCII).
-    pub fn partition(message: Message, str_len_limit: usize) -> Result<Vec<Message>, MessageError> {
+    /// Check if the length limit and the Message are compatible.
+    /// (I.e., no, if the former is 0 or the latter's header size is less than the former.)
+    fn check_is_partitionable(message: &Message, limit: usize) -> Result<String, MessageError> {
         println!("partition() input msg: {message:?}");
-        println!("partition() input limit: {message:?}");
+        println!("partition() input limit: {limit:?}");
         // Check for invalid `max` values
-        if str_len_limit == 0 {
+        if limit == 0 {
             return Err(MessageError::Partitioning(
                 "partitioning divisor cannot be zero",
             ));
         }
 
-        let length: &String = &message.length;
-        let direction: &str = message.direction.to_string();
+        // fn is_partitionable()
+        // fn check_is_partitionable()
+
+        // ----- COMPUTE HEADER SIZE && CHECK
         // Potentially unoptimized doing this every time.
         let payload: String = Message::payload_bytes_to_string(message.payload());
         println!("payload: {payload:?}");
         // Size of the payload (STRING)
         let payload_len: usize = payload.len();
-        println!("payload_len: {payload_len:?}");
+        println!("payload_len (string): {payload_len:?}");
 
-        let header_size: usize =
-            length.len() + direction.len() + Part::get_standard_string_length();
-        if str_len_limit <= header_size {
+        let header_size: usize = message.get_header_size();
+        if limit <= header_size {
             return Err(MessageError::Partitioning(
                 "length limit is too small to accommodate the header",
             ));
         }
 
-        println!("FLAG I");
+        Ok(payload)
+    }
 
-        // The number of payload characters we can put while still being able to put the header.
-        let payload_slice_size: usize = str_len_limit - header_size;
-
+    /// Computes the number of total parts the message will be split.
+    /// Returns the number of total parts AND the size of the parts.
+    fn compute_total_parts(limit: usize, header_size: usize, payload_len: usize) -> (usize, usize) {
+        let payload_slice_size: usize = limit - header_size;
         // Compute the number of partitions we will need to create
         let whole_parts: usize = payload_len / payload_slice_size;
         let remainder: usize = payload_len % payload_slice_size;
@@ -67,41 +65,83 @@ impl Partitioner {
             whole_parts
         };
 
+        println!("There are {total_parts} parts");
+        println!("The payload slice size {payload_slice_size}");
+        println!("The remainder is {remainder}");
+
+        (total_parts, payload_slice_size)
+    }
+    /// This function partitions BY TEXT, and not bytewise!
+    /// Takes a message and returns smaller messages that all fit within the character limit.
+    ///
+    /// If the input message is already smaller than the max chars, it is returned.
+    ///
+    /// # ! IMPORTANT !
+    ///
+    /// IMPORTANT!!: Everything might just blow up if the message encoding is done with UTF-8 characters (non-ASCII).
+    ///
+    /// * The `limit` is a size in number of characters.
+    pub fn partition(message: Message, limit: usize) -> Result<Vec<Message>, MessageError> {
+        // Check: can the limit accommodate the message.
+        let payload: String = Self::check_is_partitionable(&message, limit)?;
+
+        // I call this function twice...
+        let header_size: usize = message.get_header_size();
+        let payload_len: usize = payload.len();
+
+        println!("FLAG I");
+
+        // The number of payload characters we can put while still being able to put the header.
+        let (total_parts, payload_slice_size) =
+            Self::compute_total_parts(limit, header_size, payload_len);
+
         // testing2 begin--
 
         // Where the partition will be stored each loop iteration
-        let mut part_buffer: String = String::with_capacity(str_len_limit);
+        let mut part_buffer: String = String::with_capacity(limit);
 
         // All the parts that make up the inputted message
         let mut parts: Vec<Message> = Vec::with_capacity(total_parts);
 
         let mut offset: usize = 0;
+        let mut neg_offset: usize = 0;
 
-        println!("There are {total_parts} parts");
-        println!("The payload slice size {payload_slice_size}");
-        println!("The remainder is {remainder}");
 
         for i in 1..=total_parts {
             let part: String = Part::new(i, total_parts)?.to_string();
-            println!("payload.len()={}", payload.len());
+            println!("[FOR LOOP] payload.len()={}", payload.len());
 
-            let mut slice: String = if i != total_parts {
-                payload[offset..(i * payload_slice_size)].to_owned()
+            let start = (i - 1) * payload_slice_size;
+            let end = if i != total_parts {
+                (i * payload_slice_size) - neg_offset
             } else {
-                payload[offset..].to_owned()
+                payload.len()
             };
+            let mut slice = payload[start..end].to_owned();
+
+            // let mut slice: String = if i != total_parts {
+            //     // Get whole parts
+            //     payload[offset..((i - 1) * payload_slice_size)].to_owned()
+            // } else {
+            //     // Get the remainder
+            //     payload[offset..].to_owned()
+            // };
 
             //let mut slice = payload[range].to_owned();
 
             // if hex is len odd (badly cut). EXCEPT the last part.
             if slice.len() % 2 != 0 && i != total_parts {
                 slice = payload[offset..(i * payload_slice_size - 1)].to_owned();
-                offset += payload_slice_size - 1;
+                // So that the next iteration will contain the removed hex nibble.
+                //offset += payload_slice_size - 1;
+                neg_offset += 1;
             }
             // if hex len is even (OK). EXCEPT the last part.
             if slice.len() % 2 == 0 && i != total_parts {
                 // not total parts.
-                offset += payload_slice_size;
+                // CHECK THIS: (original)
+                //offset += payload_slice_size;
+                offset += slice.len();
             }
 
             // if hex is odd ON THE LAST PART
@@ -112,15 +152,16 @@ impl Partitioner {
             }
 
             // Construct the full partition string
+            // That's dirty, no constructor?
             part_buffer.clear();
-            part_buffer.push_str(&direction);
+            part_buffer.push_str(&message.direction.to_string());
             part_buffer.push_str(&part);
             part_buffer.push_str(&slice);
 
             let length: String =
                 part_buffer.len().to_string() + &Message::LENGTH_DELIMITER.to_string();
 
-            // A whole message is [Lenght, Direction, Part, Payload]
+            // A whole message is [Length, Direction, Part, Payload]
             let part = Message::from_string(length + &part_buffer)?;
             parts.extend_from_slice(&part);
         }
@@ -138,12 +179,12 @@ impl Partitioner {
         let mut parts: Vec<Message> = Vec::with_capacity(total_parts);
 
         // Where the partition will be stored each loop iteration
-        let mut part_buffer: String = String::with_capacity(str_len_limit);
+        let mut part_buffer: String = String::with_capacity(limit);
 
         println!("FLAG III");
 
         // Exits when all the payload has been partitioned
-        // Also, we have computted the number of parts, surely there's a way to not use a while
+        // Also, we have computed the number of parts, surely there's a way to not use a while
         // loop.
 
         // On the second and other round of the while loop,
@@ -183,7 +224,7 @@ impl Partitioner {
 
             // Construct the full partition string
             part_buffer.clear();
-            part_buffer.push_str(&direction);
+            //part_buffer.push_str(&direction);
             part_buffer.push_str(&part);
             part_buffer.push_str(sliced_payload);
 
@@ -484,13 +525,8 @@ mod tests {
             pub const MAX_MESSAGE_LENGTH_ALLOWED: usize = 100;
         }
     }
-    use crate::{
-        message::{Message, MessageDirection, MessageError},
-        partitioning,
-    };
-    use discord::DiscordBot;
+    use crate::message::{Message, MessageDirection};
     use rand::{seq::IndexedRandom, Rng, RngCore};
-    use serenity::model::voice_gateway::payload;
 
     // Helper function to create a Message from a given payload string.
     fn create_message(payload: &str, direction: MessageDirection) -> Message {
@@ -614,7 +650,6 @@ mod tests {
     //     assert!(merged.is_ok(), "Not Ok()");
     // }
 
-
     // TODO: This does not pass the test because we do not build a message correctly.
     // Msg: [len, direction, part, payload]
     #[test]
@@ -632,7 +667,8 @@ mod tests {
 
                 let msg_hex = random_msg.to_string();
 
-                let messages_vec = Message::from_string(random_msg.to_string()).expect("Failed to merge messages");
+                let messages_vec =
+                    Message::from_string(random_msg.to_string()).expect("Failed to merge messages");
                 if let Some(msg) = messages_vec.first() {
                     // Get the first
                     messages.push(msg.clone());

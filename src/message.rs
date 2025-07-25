@@ -3,10 +3,7 @@
 
 use std::fmt::Debug;
 
-use base64::{engine::general_purpose, Engine};
-use lazy_static::lazy_static;
-use once_cell::sync::Lazy;
-use serenity::model::voice_gateway::payload;
+use base64::Engine;
 use thiserror::Error;
 
 use crate::partitioning::{self, Aggregator, Part};
@@ -107,6 +104,11 @@ impl Message {
     pub fn is_halt_message(message: &Message) -> bool {
         let control = Self::make_halt_message(message.direction);
         control == *message
+    }
+
+    /// Returns the size of the header AS A STRING.
+    pub fn get_header_size(&self) -> usize {
+        self.length.len() + self.direction.to_string().len() + Part::get_standard_string_length()
     }
 
     /// Returns a standart halt message.
@@ -252,7 +254,7 @@ impl PartialEq for Message {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::partitioning::{Aggregator, Part};
+    use crate::partitioning::Part;
 
     #[test]
     fn test_message_direction_to_string() {
