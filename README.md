@@ -1,6 +1,9 @@
 # Discraft  
 Playing Minecraft through Discord!
 
+> [!IMPORTANT]  
+> This project is **almost** finished, I just have to get the determination to do the final plumbing and debug intricate bugs.
+
 # The Original Idea  
 
 I wondered: would it be possible to play Minecraft through Discord? That would require some knowledge of asynchronous programming, wouldn't it? And it's quite funny, isn't it?  
