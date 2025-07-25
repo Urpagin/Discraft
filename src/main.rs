@@ -153,8 +153,8 @@ async fn client(
     }
 }
 
-const SERVER_ADDRESS: &str = "82.66.201.61";
-const SERVER_PORT: u16 = 25565;
+const SERVER_ADDRESS: &str = "127.0.0.1";
+const SERVER_PORT: u16 = 25566;
 
 /// Server-side logic
 async fn server(
@@ -177,8 +177,10 @@ async fn server(
             }
         };
 
+        info!("Connecting to the server... {SERVER_ADDRESS}:{SERVER_PORT:}");
         // Connect to the server
         let mut socket = TcpStream::connect(format!("{SERVER_ADDRESS}:{SERVER_PORT}")).await?;
+        info!("Connected.");
 
         // Send the first message
         if let Err(err) = socket.write_all(discord_msg.payload()).await {

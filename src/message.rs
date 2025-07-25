@@ -191,6 +191,7 @@ impl Message {
         }
         hex::decode(string.replace(" ", ""))
             .map_err(|e| MessageError::Decode(format!("Failed to decode hex: {e}")))
+
         //
         // println!("payload_string_to_bytes() input: {string:?}");
         // let res: Vec<u8> = string
